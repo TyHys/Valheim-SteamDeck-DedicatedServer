@@ -1,20 +1,72 @@
 #!/bin/bash
 
-# Configuration
+# =====================
+# Server Configuration
+# =====================
+# Required settings - modify these for your server
+SERVER_NAME="TEWQWORLD"          # The name that appears in the server browser
+WORLD_NAME="florida"             # The name of your world
+SERVER_PASS="tewqy"            # Must be at least 5 characters
+SERVER_PUBLIC=1                # 1 for public, 0 for private
+
+# Advanced settings - change only if you know what you're doing
 CONTAINER_NAME="valheim-server"
-SERVER_NAME="Tewqland"
-WORLD_NAME="tewqs"
-SERVER_PASS="my_pass"
-SERVER_PUBLIC=1
 VALHEIM_DATA="./valheim-data"
 BACKUP_DIR="./valheim-backups"
-MAX_BACKUPS=24  # Keep last 24 backups
-DNS_NAME="valheim.imdy.in"  # Your DNS name
-CACHE_VOLUME="valheim-cache"  # Docker volume for caching
+MAX_BACKUPS=24                 # Keep last 24 backups
+CACHE_VOLUME="valheim-cache"   # Docker volume for caching
+
+# Ensure data directories exist with correct permissions
+setup_data_directories() {
+    echo "Setting up data directories..."
+    # Create the directory structure for the -savedir path
+    mkdir -p "${VALHEIM_DATA}/worlds_local"
+    mkdir -p "${VALHEIM_DATA}/worlds"
+    mkdir -p "${VALHEIM_DATA}/characters"
+    mkdir -p "${VALHEIM_DATA}/saves"
+    # Attempt to set ownership to UID 1000, GID 1000 (common for default user / steam user)
+    # This might require sudo if the script runner doesn't own the files or isn't root
+    sudo chown -R 1000:1000 "${VALHEIM_DATA}" || echo "Warning: Failed to chown ${VALHEIM_DATA}. Manual permission adjustment may be needed."
+    chmod -R u+rwx,g+rwx,o+rx "${VALHEIM_DATA}"
+}
+
+# Validate configuration
+validate_config() {
+    local error=0
+    
+    if [ -z "$SERVER_NAME" ]; then
+        echo "Error: SERVER_NAME cannot be empty"
+        error=1
+    fi
+    
+    if [ -z "$WORLD_NAME" ]; then
+        echo "Error: WORLD_NAME cannot be empty"
+        error=1
+    fi
+    
+    if [ ${#SERVER_PASS} -lt 5 ]; then
+        echo "Error: SERVER_PASS must be at least 5 characters long"
+        error=1
+    fi
+    
+    if [ "$SERVER_PUBLIC" != "0" ] && [ "$SERVER_PUBLIC" != "1" ]; then
+        echo "Error: SERVER_PUBLIC must be 0 or 1"
+        error=1
+    fi
+    
+    if [ $error -eq 1 ]; then
+        exit 1
+    fi
+}
+
+# Call validation before any operation
+validate_config
+
+# DNS_NAME="valheim.imdy.in"  # Your DNS name
 
 # Function to show usage
 show_usage() {
-    echo "Usage: $0 {start|stop|status|restart|logs|lastlog|backup|restore|players|check|cleanup|?}"
+    echo "Usage: $0 {start|stop|status|restart|logs|lastlog|backup|restore|players|check|cleanup|data|?}"
     echo "  start    - Start the Valheim server"
     echo "  stop     - Stop the Valheim server"
     echo "  status   - Show server status"
@@ -25,6 +77,7 @@ show_usage() {
     echo "  restore  - Restore from a previous backup"
     echo "  players  - List all currently connected players"
     echo "  check    - Check server accessibility"
+    echo "  data     - Check data persistence"
     echo "  cleanup  - Remove cache volume and force fresh download"
     echo "  ?        - Show this help message"
     exit 1
@@ -144,6 +197,7 @@ start_server() {
     # Check if Docker image exists
     if ! docker image inspect valheim-server:latest >/dev/null 2>&1; then
         echo "Docker image not found. Building image..."
+        export DOCKER_BUILDKIT=1
         docker build -t valheim-server .
         if [ $? -ne 0 ]; then
             echo "Failed to build Docker image"
@@ -163,26 +217,26 @@ start_server() {
         docker volume create $CACHE_VOLUME
     fi
     
-    # Create world data directories if they don't exist
-    mkdir -p "$VALHEIM_DATA/.config/unity3d/IronGate/Valheim/worlds_local"
-    mkdir -p "$VALHEIM_DATA/.config/unity3d/IronGate/Valheim/worlds"
-    chmod -R 755 "$VALHEIM_DATA"
+    # Ensure data directories exist
+    setup_data_directories
     
     echo "Starting Valheim server..."
+    echo "World data will be stored in: ${VALHEIM_DATA}/worlds_local"
     # Debug: Print the password value
     echo "Debug: SERVER_PASS value is: $SERVER_PASS"
     # Debug: Print full docker command
     echo "Debug: Running command:"
     set -x
-    # Start the server
+    # Start the server with updated volume mount for dedicated save path
     docker run -d --name $CONTAINER_NAME \
         -p 2456-2458:2456-2458/udp \
-        -v "$(pwd)/valheim-data/.config:/home/steam/.config" \
+        -v "$(pwd)/${VALHEIM_DATA}:/valheimdata" \
         -v "$CACHE_VOLUME:/home/steam/valheim-cache" \
         -e SERVER_NAME="$SERVER_NAME" \
         -e WORLD_NAME="$WORLD_NAME" \
         -e SERVER_PASS="$SERVER_PASS" \
         -e SERVER_PUBLIC=$SERVER_PUBLIC \
+        --restart unless-stopped \
         valheim-server:latest
     set +x
 
@@ -398,6 +452,18 @@ cleanup_cache() {
     fi
 }
 
+# Add a new function to check data persistence
+check_data_persistence() {
+    echo "Checking data persistence..."
+    echo "World files location: ${VALHEIM_DATA}/worlds_local"
+    echo "Current world files:"
+    ls -la "${VALHEIM_DATA}/worlds_local"
+    echo
+    echo "Other save-related files (characters, etc.) are in: ${VALHEIM_DATA}/"
+    echo "Current character files (example):" # Valheim might save characters under a 'characters' subfolder or directly if not further specified by game.
+    ls -la "${VALHEIM_DATA}/characters" # Assuming characters are in a subfolder as per our setup_data_directories
+}
+
 # Main script
 case "$1" in
     start)
@@ -429,6 +495,9 @@ case "$1" in
         ;;
     check)
         check_server
+        ;;
+    data)
+        check_data_persistence
         ;;
     cleanup)
         cleanup_cache

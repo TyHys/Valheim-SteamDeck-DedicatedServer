@@ -1,52 +1,55 @@
-FROM cm2network/steamcmd:root
+# Base image for building
+FROM cm2network/steamcmd:root as steamcmd
 
 # Set environment variables
 ENV STEAM_APPID=896660
 ENV VALHEIM_DIR="/home/steam/valheim"
 ENV CACHE_DIR="/home/steam/valheim-cache"
-ENV SERVER_NAME="My Server"
-ENV WORLD_NAME="My World"
-ENV SERVER_PASS="your_password"
-ENV SERVER_PUBLIC="true"
 
 # Create directories and set permissions
-RUN mkdir -p ${VALHEIM_DIR} ${CACHE_DIR} && \
+RUN mkdir -p ${VALHEIM_DIR} && \
+    mkdir -p ${CACHE_DIR} && \
     chown -R steam:steam /home/steam
 
-# Switch to steam user
+# Switch to steam user for installation
 USER steam
 WORKDIR /home/steam
 
 # Install Valheim Dedicated Server
 RUN mkdir -p ~/.steam && \
-    if [ ! -f "${CACHE_DIR}/valheim_server_installed" ]; then \
-        /home/steam/steamcmd/steamcmd.sh +force_install_dir ${VALHEIM_DIR} +login anonymous +app_update ${STEAM_APPID} validate +quit && \
-        cp -r ${VALHEIM_DIR}/* ${CACHE_DIR}/ && \
-        touch ${CACHE_DIR}/valheim_server_installed; \
-    else \
-        cp -r ${CACHE_DIR}/* ${VALHEIM_DIR}/; \
-    fi
+    /home/steam/steamcmd/steamcmd.sh +force_install_dir ${VALHEIM_DIR} +login anonymous +app_update ${STEAM_APPID} validate +quit
 
-# Create necessary directories for world data
-RUN mkdir -p ~/.config/unity3d/IronGate/Valheim/worlds_local && \
-    mkdir -p ~/.config/unity3d/IronGate/Valheim/worlds
+# Start fresh for the final image
+FROM cm2network/steamcmd:root
+
+# Set environment variables
+ENV STEAM_APPID=896660
+ENV VALHEIM_DIR="/home/steam/valheim"
+ENV VALHEIM_SAVE_PATH="/valheimdata"
+
+# Create necessary directories with correct structure
+RUN mkdir -p ${VALHEIM_DIR} && \
+    mkdir -p ${VALHEIM_SAVE_PATH}/worlds_local && \
+    mkdir -p ${VALHEIM_SAVE_PATH}/worlds && \
+    mkdir -p ${VALHEIM_SAVE_PATH}/characters && \
+    mkdir -p ${VALHEIM_SAVE_PATH}/saves && \
+    mkdir -p /home/steam/.steam/sdk64 && \
+    chown -R steam:steam /home/steam && \
+    chown -R steam:steam ${VALHEIM_SAVE_PATH}
+
+# Copy server files from builder stage
+COPY --from=steamcmd ${VALHEIM_DIR} ${VALHEIM_DIR}
+
+# Switch to steam user
+USER steam
+WORKDIR ${VALHEIM_DIR}
 
 # Set up Steam libraries
-RUN mkdir -p ~/.steam/sdk64 && \
-    [ -e ~/.steam/sdk64/steamclient.so ] || ln -s /home/steam/steamcmd/linux64/steamclient.so ~/.steam/sdk64/steamclient.so
-
-# Switch back to root for final setup
-USER root
-RUN chown -R steam:steam /home/steam
-
-# Switch back to steam user for running the server
-USER steam
-
-# Set the working directory
-WORKDIR ${VALHEIM_DIR}
+RUN ln -sf /home/steam/steamcmd/linux64/steamclient.so /home/steam/.steam/sdk64/steamclient.so
 
 # Expose the required ports
 EXPOSE 2456-2458/udp
 
 # Set the entrypoint
-ENTRYPOINT ./valheim_server.x86_64 -name "$SERVER_NAME" -world "$WORLD_NAME" -password "$SERVER_PASS" -public "$SERVER_PUBLIC"
+# SERVER_NAME, WORLD_NAME, SERVER_PASS, and SERVER_PUBLIC must be provided via environment variables
+ENTRYPOINT ./valheim_server.x86_64 -name "${SERVER_NAME}" -world "${WORLD_NAME}" -password "${SERVER_PASS}" -public "${SERVER_PUBLIC}" -savedir "${VALHEIM_SAVE_PATH}"
