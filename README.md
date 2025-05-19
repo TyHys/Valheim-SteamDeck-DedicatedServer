@@ -1,6 +1,8 @@
 # Valheim Dedicated Server for Steam Deck
 
-This repository contains scripts and configuration for running a Valheim dedicated server on your Steam Deck. The server runs in a Docker container with persistent storage and includes features for server management, backups, and player monitoring.
+This repository contains scripts and configuration for running a lightweight vanilla Valheim dedicated server on your Steam Deck. The server runs in a Docker container with persistent storage and includes features for server management, backups, and player monitoring. It is intended to simplify standup using as few dependencies as possible to decrease resource draw.
+
+This may be ran on non-Steam Deck devices, but issues logged for these devices will be closed & ignored within this repository.
 
 **Running this server on your Steam Deck will not prevent you from launching Valheim on your Steam account. Some Steam applications can be downloaded "anonymously" (such as the Valheim Dedicated server). This server will run in a container, utilizing this anonymous mode.**
 
