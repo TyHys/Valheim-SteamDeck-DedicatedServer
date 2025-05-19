@@ -49,4 +49,4 @@ WORKDIR ${VALHEIM_DIR}
 EXPOSE 2456-2458/udp
 
 # Set the entrypoint
-ENTRYPOINT ["./valheim_server.x86_64", "-name", "${SERVER_NAME}", "-world", "${WORLD_NAME}", "-password", "${SERVER_PASS}", "-public", "${SERVER_PUBLIC}"]
+ENTRYPOINT ./valheim_server.x86_64 -name "$SERVER_NAME" -world "$WORLD_NAME" -password "$SERVER_PASS" -public "$SERVER_PUBLIC"

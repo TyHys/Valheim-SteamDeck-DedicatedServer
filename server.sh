@@ -2,9 +2,9 @@
 
 # Configuration
 CONTAINER_NAME="valheim-server"
-SERVER_NAME="123453"
-WORLD_NAME="123452"
-SERVER_PASS="123451"
+SERVER_NAME="Tewqland"
+WORLD_NAME="tewqs"
+SERVER_PASS="my_pass"
 SERVER_PUBLIC=1
 VALHEIM_DATA="./valheim-data"
 BACKUP_DIR="./valheim-backups"
@@ -171,6 +171,9 @@ start_server() {
     echo "Starting Valheim server..."
     # Debug: Print the password value
     echo "Debug: SERVER_PASS value is: $SERVER_PASS"
+    # Debug: Print full docker command
+    echo "Debug: Running command:"
+    set -x
     # Start the server
     docker run -d --name $CONTAINER_NAME \
         -p 2456-2458:2456-2458/udp \
@@ -181,6 +184,7 @@ start_server() {
         -e SERVER_PASS="$SERVER_PASS" \
         -e SERVER_PUBLIC=$SERVER_PUBLIC \
         valheim-server:latest
+    set +x
 
     # Start hourly backup in background
     (
