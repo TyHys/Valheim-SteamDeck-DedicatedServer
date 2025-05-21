@@ -14,7 +14,11 @@ This may be ran on non-Steam Deck devices, but issues logged for these devices w
 ## Prerequisites
 
 1. Steam Deck in Desktop Mode
-2. Docker installed (if not installed, open 'Konsole' and enter these commands):
+2. Install Git (if not installed):
+   ```bash
+   sudo pacman -S git
+   ```
+3. Install Docker (if not installed), open 'Konsole' and enter these commands:
    ```bash
    sudo pacman -S docker
    sudo systemctl enable docker
