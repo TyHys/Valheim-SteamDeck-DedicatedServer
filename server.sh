@@ -133,8 +133,8 @@ create_backup() {
     # Google Drive/rclone sync
     if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
         if command -v rclone &>/dev/null; then
-            echo "Syncing backup to Google Drive via rclone..."
-            rclone copy "$BACKUP_FILE" "$RCLONE_REMOTE:$RCLONE_PATH/" && echo "Backup uploaded to Google Drive!" || echo "rclone upload failed."
+            echo "Syncing local backup directory to Google Drive via rclone..."
+            rclone sync "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" --create-empty-src-dirs && echo "Local backup directory synced to Google Drive!" || echo "rclone sync failed."
         else
             echo "rclone is not installed. Skipping Google Drive backup."
         fi
