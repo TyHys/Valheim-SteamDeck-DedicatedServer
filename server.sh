@@ -135,7 +135,7 @@ create_backup() {
     if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
         if command -v rclone &>/dev/null; then
             echo "Syncing local backup directory to Google Drive via rclone..."
-            rclone sync -P --transfers=1 --checkers=2 --drive-chunk-size=128M --drive-pacer-min-sleep=1s "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" --create-empty-src-dirs && echo "Local backup directory synced to Google Drive!" || echo "rclone sync failed."
+            rclone sync -P --transfers=10 --drive-chunk-size=128M "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" && echo "Local backup directory synced to Google Drive!" || echo "rclone sync failed."
         else
             echo "rclone is not installed. Skipping Google Drive backup."
         fi
@@ -503,7 +503,7 @@ backup_storage_setup() {
     fi
     remote="VALHEIM-SDDS"
     echo "Google Drive remote name will be set to '$remote'."
-    # Create the remote if it doesn't exist
+    # Create the remote if it doesn't exist or if user chooses to reconfigure
     if ! rclone listremotes | grep -q "^$remote:"; then
         echo "Creating Google Drive remote '$remote'..."
         rclone config create "$remote" drive scope=drive || { echo "Failed to create rclone remote."; return 1; }
@@ -511,6 +511,19 @@ backup_storage_setup() {
         rclone config reconnect "$remote": || { echo "Google Drive authorization failed."; return 1; }
     else
         echo "Google Drive remote '$remote' already exists."
+        read -p "Do you want to delete the existing remote '$remote' and reconfigure it? (y/n): " reconfigure_choice
+        if [[ "$reconfigure_choice" == [Yy]* ]]; then
+            echo "Deleting existing remote '$remote'..."
+            rclone config delete "$remote" || { echo "Failed to delete existing remote '$remote'. Please check rclone configuration manually."; return 1; }
+            
+            echo "Re-creating Google Drive remote '$remote'..."
+            rclone config create "$remote" drive scope=drive || { echo "Failed to create rclone remote."; return 1; }
+            echo "Authorizing Google Drive remote '$remote' (this will open a browser)..."
+            rclone config reconnect "$remote": || { echo "Google Drive authorization failed."; return 1; }
+            echo "Remote '$remote' reconfigured successfully."
+        else
+            echo "Keeping existing remote '$remote' configuration."
+        fi
     fi
     read -p "Enter the folder path in your Google Drive for backups (e.g., 'valheim-backups'): " path
     RCLONE_REMOTE="$remote"
