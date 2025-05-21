@@ -1,0 +1,37 @@
+# Environment and configuration files
+.env
+*.env
+!config.example.env
+
+# Backup files
+valheim-backups/
+*.tar.gz
+*.bak
+
+# Logs and temporary files
+*.log
+/tmp/
+valheim_last_ip
+*.tmp
+*.temp
+
+# Game data
+valheim-data/
+worlds/
+*.db
+*.fwl
+*.old
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+
+#Valheim Data
+valheim-*

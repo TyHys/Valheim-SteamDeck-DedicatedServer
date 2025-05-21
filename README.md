@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://i.imgur.com/mxNfTCZ.png" alt="Valheim Server Banner">
+</p>
+
 # Valheim Dedicated Server for Steam Deck
 
 This repository contains scripts and configuration for running a lightweight vanilla Valheim dedicated server on your Steam Deck. The server runs in a Docker container with persistent storage and includes features for server management, backups, and player monitoring. It is intended to simplify standup using as few dependencies as possible to decrease resource draw.
