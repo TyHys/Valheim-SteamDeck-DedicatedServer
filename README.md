@@ -27,7 +27,7 @@ This may be ran on non-Steam Deck devices, but issues logged for these devices w
    newgrp docker
    ```
 
-## Initial Setup
+## Initial Setup (Open 'Konsole' from the main menu)
 
 1. Clone this repository:
    ```bash
