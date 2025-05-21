@@ -11,6 +11,7 @@ SERVER_PUBLIC=1                # 1 for public, 0 for private
 
 # Advanced settings - change only if you know what you're doing
 CONTAINER_NAME="valheim-server"
+IMAGE_NAME="valheim-server"
 VALHEIM_DATA="./valheim-data"
 BACKUP_DIR="./valheim-backups"
 MAX_BACKUPS=24                 # Keep last 24 backups
@@ -195,10 +196,10 @@ start_server() {
     fi
     
     # Check if Docker image exists
-    if ! docker image inspect valheim-server:latest >/dev/null 2>&1; then
+    if ! docker image inspect ${IMAGE_NAME}:latest >/dev/null 2>&1; then
         echo "Docker image not found. Building image..."
         export DOCKER_BUILDKIT=1
-        docker build -t valheim-server .
+        docker build -t ${IMAGE_NAME} .
         if [ $? -ne 0 ]; then
             echo "Failed to build Docker image"
             return 1
@@ -232,7 +233,7 @@ start_server() {
         -e SERVER_PASS="$SERVER_PASS" \
         -e SERVER_PUBLIC=$SERVER_PUBLIC \
         --restart unless-stopped \
-        valheim-server:latest
+        ${IMAGE_NAME}:latest
 
     # Start hourly backup in background
     (
@@ -458,6 +459,56 @@ check_data_persistence() {
     ls -la "${VALHEIM_DATA}/characters" # Assuming characters are in a subfolder as per our setup_data_directories
 }
 
+setup_server_config() {
+    echo "Let's set up your Valheim server configuration."
+    read -p "Server Name [${SERVER_NAME}]: " input
+    SERVER_NAME="${input:-$SERVER_NAME}"
+
+    read -p "World Name [${WORLD_NAME}]: " input
+    WORLD_NAME="${input:-$WORLD_NAME}"
+
+    while true; do
+        read -p "Server Password (min 5 chars) [${SERVER_PASS}]: " input
+        input="${input:-$SERVER_PASS}"
+        if [ ${#input} -ge 5 ]; then
+            SERVER_PASS="$input"
+            break
+        else
+            echo "Password must be at least 5 characters."
+        fi
+    done
+
+    while true; do
+        read -p "Public Server? (1=Yes, 0=No) [${SERVER_PUBLIC}]: " input
+        input="${input:-$SERVER_PUBLIC}"
+        if [[ "$input" == "1" || "$input" == "0" ]]; then
+            SERVER_PUBLIC="$input"
+            break
+        else
+            echo "Please enter 1 for public or 0 for private."
+        fi
+    done
+
+    cat > .valheim.env <<EOF
+SERVER_NAME="${SERVER_NAME}"
+WORLD_NAME="${WORLD_NAME}"
+SERVER_PASS="${SERVER_PASS}"
+SERVER_PUBLIC=${SERVER_PUBLIC}
+EOF
+
+    echo "Configuration saved to .valheim.env!"
+
+    echo "Building the Docker image for the Valheim server..."
+    export DOCKER_BUILDKIT=1
+    docker build -t ${IMAGE_NAME} .
+    if [ $? -eq 0 ]; then
+        echo "Docker image built successfully!"
+        echo "You can now start your server with: ./server.sh start"
+    else
+        echo "Docker image build failed. Please check the output above for errors."
+    fi
+}
+
 # Main script
 case "$1" in
     start)
@@ -495,6 +546,9 @@ case "$1" in
         ;;
     cleanup)
         cleanup_cache
+        ;;
+    setup)
+        setup_server_config
         ;;
     "?")
         show_usage

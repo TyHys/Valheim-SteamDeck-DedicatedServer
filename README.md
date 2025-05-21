@@ -27,26 +27,23 @@ This may be ran on non-Steam Deck devices, but issues logged for these devices w
    newgrp docker
    ```
 
-## Initial Setup 
+## Initial Setup
 
-1. Clone this repository (Open 'Konsole' from the main menu):
+1. Clone this repository:
    ```bash
    git clone https://github.com/TyHys/Valheim-SteamDeck-DedicatedServer.git
    cd Valheim-SteamDeck-DedicatedServer
    ```
 
-2. Build the Docker container (Open 'Konsole' from the main menu):
+2. Run the interactive setup (this will prompt for your server settings and build the Docker image):
    ```bash
-   docker build -t valheim-server:latest .
+   ./server.sh setup
    ```
 
-3. Edit `server.sh` to configure your server settings:
-```bash
-SERVER_NAME="My Valheim Server"    # Your server name
-WORLD_NAME="Dedicated"             # Your world name
-SERVER_PASS="your_password"        # Server password
-SERVER_PUBLIC=1                    # 1 for public, 0 for private
-```
+3. Start the server:
+   ```bash
+   ./server.sh start
+   ```
 
 ## Server Management
 
@@ -158,7 +155,7 @@ If you encounter any issues or have suggestions for improvements, please:
    - Verify Docker is running: `systemctl status docker`
 
 2. **Players can't connect**
-   - Run: `./server.sh check` to verify port setup
+   - Run: `./server.sh check` to get your public IP & verify port setup. This will not always correctly check the ports, so test with another person.
    - Ensure UDP ports 2456-2458 are forwarded
 
 3. **Performance Issues**
