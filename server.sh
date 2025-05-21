@@ -76,23 +76,25 @@ validate_config
 
 # Function to show usage
 show_usage() {
-    echo "Usage: $0 {start|stop|status|restart|logs|lastlog|backup|restore|players|check|cleanup|data|setup|gdrive-sync-setup|gdrive-sync|?}"
-    echo "  start    - Start the Valheim server"
-    echo "  stop     - Stop the Valheim server"
-    echo "  status   - Show server status"
-    echo "  restart  - Restart the server"
-    echo "  logs     - Show server logs (follow mode)"
-    echo "  lastlog  - Show last 100 lines of logs"
-    echo "  backup   - Create a backup"
-    echo "  restore  - Restore from a previous backup"
-    echo "  players  - List all currently connected players"
-    echo "  check    - Check server accessibility"
-    echo "  data     - Check data persistence"
-    echo "  cleanup  - Remove cache volume and force fresh download"
-    echo "  setup    - Set up server configuration"
-    echo "  gdrive-sync-setup - Set up or update Google Drive/rclone backup integration"
-    echo "  gdrive-sync - Manually sync backup directory to Google Drive"
-    echo "  ?        - Show this help message"
+    echo "Usage: $0 {start|stop|status|restart|logs|lastlog|backup|restore|players|access|cleanup|data|setup|gdrive-sync-setup|gdrive-sync|backup-schedule|backup-reenable|?}"
+    echo "  🟢 start             - Start the Valheim server"
+    echo "  🔴 stop              - Stop the Valheim server"
+    echo "  🟡 status            - Show server status"
+    echo "  ♻️  restart           - Restart the server"
+    echo "  📜 logs              - Show server logs (follow mode)"
+    echo "  📜 lastlog           - Show last 100 lines of logs"
+    echo "  📂 backup            - Create a backup"
+    echo "  🗃️  restore           - Restore from a previous backup"
+    echo "  👥 players           - List all currently connected players"
+    echo "  🌐 access            - Check server accessibility"
+    echo "  🧹 cleanup           - Remove cache volume and force fresh download"
+    echo "  💾 data              - Check data persistence"
+    echo "  ⚙️  setup             - Set up server configuration"
+    echo "  ☁️  gdrive-sync-setup - Set up or update Google Drive/rclone backup integration"
+    echo "  ☁️  gdrive-sync       - Manually sync backup directory to Google Drive"
+    echo "  🕒 backup-schedule   - Describe the backup schedule"
+    echo "  🔄 backup-reenable   - Start the backup scheduler if it is not running"
+    echo "  ❓ ?                 - Show this help message"
     exit 1
 }
 
@@ -134,8 +136,7 @@ create_backup() {
     # Google Drive/rclone sync
     if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
         if command -v rclone &>/dev/null; then
-            echo "Syncing local backup directory to Google Drive via rclone..."
-            rclone sync -P --transfers=10 --drive-chunk-size=128M "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" && echo "Local backup directory synced to Google Drive!" || echo "rclone sync failed."
+            gdrive_sync
         else
             echo "rclone is not installed. Skipping Google Drive backup."
         fi
@@ -209,6 +210,36 @@ restore_server() {
     fi
 }
 
+# Function to manage the backup scheduler
+check_backup_scheduler() {
+    # Kill any existing backup loop before starting a new one
+    if [ -f /tmp/valheim_backup_pid ]; then
+        backup_pid=$(cat /tmp/valheim_backup_pid)
+        if kill -0 $backup_pid 2>/dev/null; then
+            echo "Killing existing backup loop (PID $backup_pid)..."
+            kill $backup_pid
+        fi
+        rm -f /tmp/valheim_backup_pid
+    fi
+    
+    if is_running; then
+        local interval_sec=$(( ${BACKUP_INTERVAL_HOURS:-1} * 3600 ))
+        echo "Starting hourly backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
+        (
+            while true; do
+                sleep $interval_sec
+                if is_running; then
+                    echo "[$(date)] Running scheduled backup..."
+                    create_backup
+                fi
+            done
+        ) &
+        echo $! > /tmp/valheim_backup_pid
+    else
+        echo "No running server, backup scheduler not started."
+    fi
+}
+
 # Function to start server
 start_server() {
     if is_running; then
@@ -255,37 +286,19 @@ start_server() {
         --restart unless-stopped \
         ${IMAGE_NAME}:latest
 
-    # Start hourly backup in background
-    (
-        while true; do
-            sleep 3600  # Wait for 1 hour
-            if is_running; then
-                echo "[$(date)] Running hourly backup..."
-                create_backup
-            fi
-        done
-    ) &
-    echo $! > /tmp/valheim_backup_pid
+    # Start or restart the backup scheduler
+    check_backup_scheduler
 }
 
 # Function to stop server
 stop_server() {
     if ! is_running; then
         echo "Server is not running."
+        check_backup_scheduler
         return 0
     fi
 
     echo "Preparing to stop Valheim server..."
-    
-    # Stop the hourly backup process if running
-    if [ -f /tmp/valheim_backup_pid ]; then
-        backup_pid=$(cat /tmp/valheim_backup_pid)
-        if kill -0 $backup_pid 2>/dev/null; then
-            echo "Stopping hourly backup process..."
-            kill $backup_pid
-        fi
-        rm -f /tmp/valheim_backup_pid
-    fi
     
     # Create backup before shutdown
     echo "Creating backup before shutdown..."
@@ -307,6 +320,8 @@ stop_server() {
         echo "Error: Server is still running! Please check server status."
         return 1
     fi
+    # Stop or restart the backup scheduler
+    check_backup_scheduler
 }
 
 # Function to show status
@@ -395,7 +410,7 @@ list_players() {
 }
 
 # Function to check server accessibility
-check_server() {
+access_server() {
     if ! is_running; then
         echo "Error: Server is not running"
         return 1
@@ -501,8 +516,12 @@ backup_storage_setup() {
                 ;;
         esac
     fi
-    remote="VALHEIM-SDDS"
-    echo "Google Drive remote name will be set to '$remote'."
+
+    # Prompt for remote name, default to current or VALHEIM-SDDS
+    default_remote=${RCLONE_REMOTE:-VALHEIM-SDDS}
+    read -p "Enter the rclone remote name to use for Google Drive [${default_remote}]: " remote
+    remote=${remote:-$default_remote}
+
     # Create the remote if it doesn't exist or if user chooses to reconfigure
     if ! rclone listremotes | grep -q "^$remote:"; then
         echo "Creating Google Drive remote '$remote'..."
@@ -515,7 +534,6 @@ backup_storage_setup() {
         if [[ "$reconfigure_choice" == [Yy]* ]]; then
             echo "Deleting existing remote '$remote'..."
             rclone config delete "$remote" || { echo "Failed to delete existing remote '$remote'. Please check rclone configuration manually."; return 1; }
-            
             echo "Re-creating Google Drive remote '$remote'..."
             rclone config create "$remote" drive scope=drive || { echo "Failed to create rclone remote."; return 1; }
             echo "Authorizing Google Drive remote '$remote' (this will open a browser)..."
@@ -525,34 +543,26 @@ backup_storage_setup() {
             echo "Keeping existing remote '$remote' configuration."
         fi
     fi
-    read -p "Enter the folder path in your Google Drive for backups (e.g., 'valheim-backups'): " path
+
+    # Prompt for Google Drive folder path, default to current or valheim-backups
+    default_path=${RCLONE_PATH:-valheim-backups}
+    read -p "Enter the folder path in your Google Drive for backups [${default_path}]: " path
+    path=${path:-$default_path}
     RCLONE_REMOTE="$remote"
     RCLONE_PATH="$path"
 
-    # Ask for local backup folder name
-    read -p "Enter the local backup folder name (default: valheim-backups): " local_backup
-    local_backup=${local_backup:-valheim-backups}
-    BACKUP_DIR="./$local_backup"
-    mkdir -p "$BACKUP_DIR"
-    echo "Local backup folder set to: $BACKUP_DIR"
-
-    # Ask for number of backups to keep
-    read -p "How many backups do you want to keep? (default: 24): " max_bak
-    max_bak=${max_bak:-24}
-    MAX_BACKUPS="$max_bak"
-    echo "Will keep the last $MAX_BACKUPS backups."
-
     # Save to .valheim.env (append or update)
     grep -v '^RCLONE_REMOTE=' .valheim.env 2>/dev/null | \
-      grep -v '^RCLONE_PATH=' | \
-      grep -v '^BACKUP_DIR=' | \
-      grep -v '^MAX_BACKUPS=' > .valheim.env.tmp || true
+      grep -v '^RCLONE_PATH=' > .valheim.env.tmp || true
     mv .valheim.env.tmp .valheim.env 2>/dev/null || true
     echo "RCLONE_REMOTE=\"$RCLONE_REMOTE\"" >> .valheim.env
     echo "RCLONE_PATH=\"$RCLONE_PATH\"" >> .valheim.env
-    echo "BACKUP_DIR=\"$BACKUP_DIR\"" >> .valheim.env
-    echo "MAX_BACKUPS=\"$MAX_BACKUPS\"" >> .valheim.env
     echo "Google Drive backup configuration saved!"
+
+    # Re-source .valheim.env to update variables in current shell
+    if [ -f .valheim.env ]; then
+        source .valheim.env
+    fi
 }
 
 setup_server_config() {
@@ -585,14 +595,38 @@ setup_server_config() {
         fi
     done
 
-    cat > .valheim.env <<EOF
-SERVER_NAME="${SERVER_NAME}"
-WORLD_NAME="${WORLD_NAME}"
-SERVER_PASS="${SERVER_PASS}"
-SERVER_PUBLIC=${SERVER_PUBLIC}
-EOF
+    # Ask for local backup folder name
+    default_local_backup=${BACKUP_DIR:-valheim-backups}
+    read -p "Enter the local backup folder name (default: ${default_local_backup}): " local_backup
+    local_backup=${local_backup:-$default_local_backup}
+    BACKUP_DIR="./$local_backup"
+    mkdir -p "$BACKUP_DIR"
+    echo "Local backup folder set to: $BACKUP_DIR"
 
-    echo "Configuration saved to .valheim.env!"
+    # Ask for number of backups to keep
+    default_max_bak=${MAX_BACKUPS:-24}
+    read -p "How many backups do you want to keep? (default: ${default_max_bak}): " max_bak
+    max_bak=${max_bak:-$default_max_bak}
+    MAX_BACKUPS="$max_bak"
+    echo "Will keep the last $MAX_BACKUPS backups."
+
+    # Ask for backup interval in hours
+    default_backup_interval=${BACKUP_INTERVAL_HOURS:-1}
+    read -p "How many hours should be between each automatic backup? (default: ${default_backup_interval}): " backup_interval
+    backup_interval=${backup_interval:-$default_backup_interval}
+    BACKUP_INTERVAL_HOURS="$backup_interval"
+    echo "Backups will be made every $BACKUP_INTERVAL_HOURS hour(s) while the server is running."
+
+    # Save to .valheim.env (append or update)
+    grep -v '^RCLONE_REMOTE=' .valheim.env 2>/dev/null | \
+      grep -v '^RCLONE_PATH=' | \
+      grep -v '^BACKUP_DIR=' | \
+      grep -v '^MAX_BACKUPS=' | \
+      grep -v '^BACKUP_INTERVAL_HOURS=' > .valheim.env.tmp || true
+    mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+    echo "BACKUP_DIR=\"$BACKUP_DIR\"" >> .valheim.env
+    echo "MAX_BACKUPS=\"$MAX_BACKUPS\"" >> .valheim.env
+    echo "BACKUP_INTERVAL_HOURS=\"$BACKUP_INTERVAL_HOURS\"" >> .valheim.env
 
     # Ask about Google Drive backup
     while true; do
@@ -618,13 +652,86 @@ EOF
 gdrive_sync() {
     if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
         if command -v rclone &>/dev/null; then
-            echo "Manually syncing local backup directory to Google Drive via rclone..."
-            rclone sync -P --transfers=1 --checkers=2 --drive-chunk-size=128M --drive-pacer-min-sleep=1s "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" --create-empty-src-dirs && echo "Local backup directory synced to Google Drive!" || echo "rclone sync failed."
+            echo "Syncing local backup directory to Google Drive via rclone..."
+            echo "  Local folder: $BACKUP_DIR"
+            echo "  Remote path: $RCLONE_REMOTE:$RCLONE_PATH/"
+            echo
+            rclone sync -P --transfers=3 "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" && \
+                echo "✅ Local backup directory synced to Google Drive!" || echo "❌ rclone sync failed."
         else
             echo "rclone is not installed. Skipping Google Drive backup."
         fi
     else
         echo "Google Drive sync is not configured. Run './server.sh gdrive-sync-setup' first."
+    fi
+}
+
+# Function to describe the backup schedule in human language
+backup_schedule() {
+    # Check if the backup scheduler is running
+    local scheduler_status="OFF"
+    if [ -f /tmp/valheim_backup_pid ]; then
+        backup_pid=$(cat /tmp/valheim_backup_pid)
+        if kill -0 $backup_pid 2>/dev/null; then
+            scheduler_status="ON"
+        fi
+    fi
+    if [ "$scheduler_status" = "ON" ]; then
+        echo "🟢 Backup Scheduler: ON (scheduled backups active)"
+    else
+        echo "🔴 Backup Scheduler: OFF (no scheduled backups running)"
+    fi
+    echo
+    echo "🗂️  Valheim Server Backup Schedule"
+    echo "────────────────────────────────────"
+    echo "⏰ Frequency:"
+    echo "   • Every ${BACKUP_INTERVAL_HOURS:-1} hour(s) while the server is running"
+    echo "   • Before the server is stopped"
+    echo "   • Manual backups: ./server.sh backup"
+    echo
+    echo "💾 Retention:"
+    echo "   • Keeps the last $MAX_BACKUPS backups"
+    echo "   • Backup location: $BACKUP_DIR"
+    echo
+    if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
+        echo "☁️  Cloud Sync:"
+        echo "   • Google Drive sync is ENABLED"
+        echo "   • Remote: $RCLONE_REMOTE"
+        echo "   • Folder: $RCLONE_PATH"
+    else
+        echo "☁️  Cloud Sync:"
+        echo "   • Google Drive sync is DISABLED"
+    fi
+    echo
+}
+
+# Function to re-enable the backup scheduler if not running
+backup_reenable() {
+    if [ -f /tmp/valheim_backup_pid ]; then
+        backup_pid=$(cat /tmp/valheim_backup_pid)
+        if kill -0 $backup_pid 2>/dev/null; then
+            echo "🟢 Backup scheduler is already running (PID $backup_pid)."
+            return 0
+        else
+            rm -f /tmp/valheim_backup_pid
+        fi
+    fi
+    if is_running; then
+        local interval_sec=$(( ${BACKUP_INTERVAL_HOURS:-1} * 3600 ))
+        echo "Starting backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
+        (
+            while true; do
+                sleep $interval_sec
+                if is_running; then
+                    echo "[$(date)] Running scheduled backup..."
+                    create_backup
+                fi
+            done
+        ) &
+        echo $! > /tmp/valheim_backup_pid
+        echo "🟢 Backup scheduler started (PID $(cat /tmp/valheim_backup_pid))."
+    else
+        echo "🔴 Server is not running. Start the server first to enable the backup scheduler."
     fi
 }
 
@@ -657,11 +764,8 @@ case "$1" in
     players)
         list_players
         ;;
-    check)
-        check_server
-        ;;
-    data)
-        check_data_persistence
+    access)
+        access_server
         ;;
     cleanup)
         cleanup_cache
@@ -674,6 +778,12 @@ case "$1" in
         ;;
     gdrive-sync)
         gdrive_sync
+        ;;
+    backup-schedule)
+        backup_schedule
+        ;;
+    backup-reenable)
+        backup_reenable
         ;;
     "?")
         show_usage

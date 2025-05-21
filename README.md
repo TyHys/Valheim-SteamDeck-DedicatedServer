@@ -77,10 +77,12 @@ The `server.sh` script provides several commands for managing your server:
 | lastlog              | Show last 100 lines of logs                             |
 | backup               | Create a backup                                         |
 | players              | List all currently connected players                    |
-| check                | Check server accessibility                              |
+| access               | Check server accessibility                              |
 | setup                | Interactive server configuration and image build         |
 | gdrive-sync-setup    | Set up or update Google Drive (via rclone) backup integration |
 | gdrive-sync          | Manually sync backup directory to Google Drive           |
+| backup-schedule      | Show a human-readable description of the backup schedule |
+| backup-reenable      | Start the backup scheduler if it is not running         |
 | ?                    | Show this help message                                  |
 
 ### Running Commands 
@@ -146,7 +148,7 @@ View connected players:
 
 Check server accessibility:
 ```bash
-./server.sh check
+./server.sh access
 ```
 
 ## File Structure
@@ -201,7 +203,7 @@ If you encounter any issues or have suggestions for improvements, please:
    - Verify Docker is running: `systemctl status docker`
 
 2. **Players can't connect**
-   - Run: `./server.sh check` to get your public IP & verify port setup. This will not always correctly check the ports, so test with another person.
+   - Run: `./server.sh access` to get your public IP & verify port setup. This will not always correctly check the ports, so test with another person.
    - Ensure UDP ports 2456-2458 are forwarded
 
 3. **Performance Issues**
