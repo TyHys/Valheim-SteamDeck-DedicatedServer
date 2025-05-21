@@ -14,11 +14,11 @@ This may be ran on non-Steam Deck devices, but issues logged for these devices w
 ## Prerequisites
 
 1. Steam Deck in Desktop Mode
-2. Install Git (if not installed):
+2. Install Git (If not installed ➡️ Open 'Konsole' from the main menu):
    ```bash
    sudo pacman -S git
    ```
-3. Install Docker (if not installed), open 'Konsole' and enter these commands:
+3. Install Docker (If not installed ➡️ Open 'Konsole' from the main menu):
    ```bash
    sudo pacman -S docker
    sudo systemctl enable docker
@@ -27,15 +27,15 @@ This may be ran on non-Steam Deck devices, but issues logged for these devices w
    newgrp docker
    ```
 
-## Initial Setup (Open 'Konsole' from the main menu)
+## Initial Setup 
 
-1. Clone this repository:
+1. Clone this repository (Open 'Konsole' from the main menu):
    ```bash
    git clone https://github.com/TyHys/Valheim-SteamDeck-DedicatedServer.git
    cd Valheim-SteamDeck-DedicatedServer
    ```
 
-2. Build the Docker image:
+2. Build the Docker container (Open 'Konsole' from the main menu):
    ```bash
    docker build -t valheim-server:latest .
    ```
