@@ -582,7 +582,7 @@ EOF
 
     # Ask about Google Drive backup
     while true; do
-        read -p "Would you like to set up Google Drive backup now? (y/n): " yn
+        read -p "OPTIONAL (THIS CAN BE SET UP LATER USING './server.sh backup-storage') - Would you like to set up Google Drive backup now? (y/n): " yn
         case $yn in
             [Yy]*) backup_storage_setup; break;;
             [Nn]*) break;;

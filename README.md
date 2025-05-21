@@ -64,7 +64,7 @@ Commands:
   players  - List all currently connected players
   check    - Check server accessibility
   setup    - Interactive server configuration and image build
-  backup-storage - Set up or update Google Drive/rclone backup integration
+  backup-storage - Set up or update Google Drive (via rclone) backup integration
   ?        - Show this help message
 ```
 
