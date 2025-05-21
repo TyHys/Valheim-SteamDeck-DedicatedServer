@@ -4,9 +4,9 @@
 # Server Configuration
 # =====================
 # Required settings - modify these for your server
-SERVER_NAME="MY_SERVER"          # The name that appears in the server browser
-WORLD_NAME="MY_WORLD"             # The name of your world
-SERVER_PASS="MY_PASSWORD"            # Must be at least 5 characters
+SERVER_NAME="TEWQWORLD"          # The name that appears in the server browser
+WORLD_NAME="florida"             # The name of your world
+SERVER_PASS="tewqy"            # Must be at least 5 characters
 SERVER_PUBLIC=1                # 1 for public, 0 for private
 
 # Advanced settings - change only if you know what you're doing
@@ -76,7 +76,7 @@ validate_config
 
 # Function to show usage
 show_usage() {
-    echo "Usage: $0 {start|stop|status|restart|logs|lastlog|backup|restore|players|check|cleanup|data|setup|backup-storage|?}"
+    echo "Usage: $0 {start|stop|status|restart|logs|lastlog|backup|restore|players|check|cleanup|data|setup|gdrive-sync-setup|gdrive-sync|?}"
     echo "  start    - Start the Valheim server"
     echo "  stop     - Stop the Valheim server"
     echo "  status   - Show server status"
@@ -90,7 +90,8 @@ show_usage() {
     echo "  data     - Check data persistence"
     echo "  cleanup  - Remove cache volume and force fresh download"
     echo "  setup    - Set up server configuration"
-    echo "  backup-storage - Set up or update Google Drive/rclone backup integration"
+    echo "  gdrive-sync-setup - Set up or update Google Drive/rclone backup integration"
+    echo "  gdrive-sync - Manually sync backup directory to Google Drive"
     echo "  ?        - Show this help message"
     exit 1
 }
@@ -134,7 +135,7 @@ create_backup() {
     if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
         if command -v rclone &>/dev/null; then
             echo "Syncing local backup directory to Google Drive via rclone..."
-            rclone sync "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" --create-empty-src-dirs && echo "Local backup directory synced to Google Drive!" || echo "rclone sync failed."
+            rclone sync -P --transfers=1 --checkers=2 --drive-chunk-size=128M --drive-pacer-min-sleep=1s "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" --create-empty-src-dirs && echo "Local backup directory synced to Google Drive!" || echo "rclone sync failed."
         else
             echo "rclone is not installed. Skipping Google Drive backup."
         fi
@@ -582,7 +583,7 @@ EOF
 
     # Ask about Google Drive backup
     while true; do
-        read -p "OPTIONAL (THIS CAN BE SET UP LATER USING './server.sh backup-storage') - Would you like to set up Google Drive backup now? (y/n): " yn
+        read -p "OPTIONAL (THIS CAN BE SET UP LATER USING './server.sh gdrive-sync-setup') - Would you like to set up Google Drive backup now? (y/n): " yn
         case $yn in
             [Yy]*) backup_storage_setup; break;;
             [Nn]*) break;;
@@ -597,6 +598,20 @@ EOF
         echo "You can now start your server with: ./server.sh start"
     else
         echo "Docker image build failed. Please check the output above for errors."
+    fi
+}
+
+# Function to manually sync backup directory to Google Drive
+gdrive_sync() {
+    if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
+        if command -v rclone &>/dev/null; then
+            echo "Manually syncing local backup directory to Google Drive via rclone..."
+            rclone sync -P --transfers=1 --checkers=2 --drive-chunk-size=128M --drive-pacer-min-sleep=1s "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" --create-empty-src-dirs && echo "Local backup directory synced to Google Drive!" || echo "rclone sync failed."
+        else
+            echo "rclone is not installed. Skipping Google Drive backup."
+        fi
+    else
+        echo "Google Drive sync is not configured. Run './server.sh gdrive-sync-setup' first."
     fi
 }
 
@@ -641,8 +656,11 @@ case "$1" in
     setup)
         setup_server_config
         ;;
-    backup-storage)
+    gdrive-sync-setup)
         backup_storage_setup
+        ;;
+    gdrive-sync)
+        gdrive_sync
         ;;
     "?")
         show_usage
