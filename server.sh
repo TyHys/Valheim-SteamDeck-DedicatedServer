@@ -198,7 +198,6 @@ start_server() {
     # Check if Docker image exists
     if ! docker image inspect ${IMAGE_NAME}:latest >/dev/null 2>&1; then
         echo "Docker image not found. Building image..."
-        export DOCKER_BUILDKIT=1
         docker build -t ${IMAGE_NAME} .
         if [ $? -ne 0 ]; then
             echo "Failed to build Docker image"
@@ -499,7 +498,6 @@ EOF
     echo "Configuration saved to .valheim.env!"
 
     echo "Building the Docker image for the Valheim server..."
-    export DOCKER_BUILDKIT=1
     docker build -t ${IMAGE_NAME} .
     if [ $? -eq 0 ]; then
         echo "Docker image built successfully!"

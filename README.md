@@ -63,6 +63,7 @@ Commands:
   chat     - Send message to all players
   players  - List all currently connected players
   check    - Check server accessibility
+  setup    - Interactive server configuration and image build
   ?        - Show this help message
 ```
 
