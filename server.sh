@@ -500,9 +500,17 @@ backup_storage_setup() {
                 ;;
         esac
     fi
-    echo "This will open the rclone config wizard. Follow the prompts to add a new Google Drive remote."
-    rclone config
-    read -p "Enter the rclone remote name you configured (e.g., 'gdrive'): " remote
+    remote="VALHEIM-SDDS"
+    echo "Google Drive remote name will be set to '$remote'."
+    # Create the remote if it doesn't exist
+    if ! rclone listremotes | grep -q "^$remote:"; then
+        echo "Creating Google Drive remote '$remote'..."
+        rclone config create "$remote" drive scope=drive || { echo "Failed to create rclone remote."; return 1; }
+        echo "Authorizing Google Drive remote '$remote' (this will open a browser)..."
+        rclone config reconnect "$remote": || { echo "Google Drive authorization failed."; return 1; }
+    else
+        echo "Google Drive remote '$remote' already exists."
+    fi
     read -p "Enter the folder path in your Google Drive for backups (e.g., 'valheim-backups'): " path
     RCLONE_REMOTE="$remote"
     RCLONE_PATH="$path"
