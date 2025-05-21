@@ -64,7 +64,8 @@ Commands:
   players  - List all currently connected players
   check    - Check server accessibility
   setup    - Interactive server configuration and image build
-  backup-storage - Set up or update Google Drive (via rclone) backup integration
+  gdrive-sync-setup - Set up or update Google Drive (via rclone) backup integration
+  gdrive-sync - Manually sync backup directory to Google Drive
   ?        - Show this help message
 ```
 
@@ -94,11 +95,16 @@ You can automatically upload your backups to Google Drive using [rclone](https:/
 
 1. Run the setup command and choose to set up Google Drive backup when prompted, **or** run:
    ```bash
-   ./server.sh backup-storage
+   ./server.sh gdrive-sync-setup
    ```
    at any time to set up or update your Google Drive/rclone integration.
 2. Follow the prompts to configure rclone and specify your Google Drive remote and backup folder.
 3. After setup, all new backups will be automatically uploaded to your Google Drive.
+4. To manually trigger a sync of your backup folder to Google Drive, run:
+   ```bash
+   ./server.sh gdrive-sync
+   ```
+   This is useful if you want to retry a sync after a rate limit or upload issue.
 
 > **Note:** You must have `rclone` installed. On Steam Deck:
 > ```bash
