@@ -29,7 +29,7 @@ This may be ran on non-Steam Deck devices, but issues logged for these devices w
 
 ## Initial Setup
 
-1. Clone this repository:
+1. Clone this repository - This will be the location of your server data & backups on your Steam Deck. To easily select a folder, open it in the file explorer. You can right click in the folder and select "Open Terminal Here" before running the below commands.
    ```bash
    git clone https://github.com/TyHys/Valheim-SteamDeck-DedicatedServer.git
    cd Valheim-SteamDeck-DedicatedServer
@@ -64,6 +64,7 @@ Commands:
   players  - List all currently connected players
   check    - Check server accessibility
   setup    - Interactive server configuration and image build
+  backup-storage - Set up or update Google Drive/rclone backup integration
   ?        - Show this help message
 ```
 
@@ -86,6 +87,24 @@ Manual backup:
 ```bash
 ./server.sh backup
 ```
+
+### Google Drive Backup (Optional)
+
+You can automatically upload your backups to Google Drive using [rclone](https://rclone.org/):
+
+1. Run the setup command and choose to set up Google Drive backup when prompted, **or** run:
+   ```bash
+   ./server.sh backup-storage
+   ```
+   at any time to set up or update your Google Drive/rclone integration.
+2. Follow the prompts to configure rclone and specify your Google Drive remote and backup folder.
+3. After setup, all new backups will be automatically uploaded to your Google Drive.
+
+> **Note:** You must have `rclone` installed. On Steam Deck:
+> ```bash
+> sudo pacman -S rclone
+> ```
+> Or see [rclone.org/install](https://rclone.org/install/) for other platforms.
 
 ## Monitoring
 

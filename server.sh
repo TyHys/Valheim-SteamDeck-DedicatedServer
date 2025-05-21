@@ -17,6 +17,15 @@ BACKUP_DIR="./valheim-backups"
 MAX_BACKUPS=24                 # Keep last 24 backups
 CACHE_VOLUME="valheim-cache"   # Docker volume for caching
 
+# Google Drive/rclone backup config
+RCLONE_REMOTE=""
+RCLONE_PATH=""
+
+# Load config from .valheim.env if it exists
+if [ -f .valheim.env ]; then
+    source .valheim.env
+fi
+
 # Ensure data directories exist with correct permissions
 setup_data_directories() {
     echo "Setting up data directories..."
@@ -67,7 +76,7 @@ validate_config
 
 # Function to show usage
 show_usage() {
-    echo "Usage: $0 {start|stop|status|restart|logs|lastlog|backup|restore|players|check|cleanup|data|?}"
+    echo "Usage: $0 {start|stop|status|restart|logs|lastlog|backup|restore|players|check|cleanup|data|setup|backup-storage|?}"
     echo "  start    - Start the Valheim server"
     echo "  stop     - Stop the Valheim server"
     echo "  status   - Show server status"
@@ -80,6 +89,8 @@ show_usage() {
     echo "  check    - Check server accessibility"
     echo "  data     - Check data persistence"
     echo "  cleanup  - Remove cache volume and force fresh download"
+    echo "  setup    - Set up server configuration"
+    echo "  backup-storage - Set up or update Google Drive/rclone backup integration"
     echo "  ?        - Show this help message"
     exit 1
 }
@@ -118,7 +129,16 @@ create_backup() {
     echo "Backup process completed"
     echo "Backup location: $BACKUP_FILE"
     echo "Total backups: $(ls "$BACKUP_DIR"/valheim_backup_*.tar.gz 2>/dev/null | wc -l)/$MAX_BACKUPS"
-    
+
+    # Google Drive/rclone sync
+    if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
+        if command -v rclone &>/dev/null; then
+            echo "Syncing backup to Google Drive via rclone..."
+            rclone copy "$BACKUP_FILE" "$RCLONE_REMOTE:$RCLONE_PATH/" && echo "Backup uploaded to Google Drive!" || echo "rclone upload failed."
+        else
+            echo "rclone is not installed. Skipping Google Drive backup."
+        fi
+    fi
     return 0
 }
 
@@ -458,6 +478,46 @@ check_data_persistence() {
     ls -la "${VALHEIM_DATA}/characters" # Assuming characters are in a subfolder as per our setup_data_directories
 }
 
+# Function to set up rclone/Google Drive backup
+backup_storage_setup() {
+    echo "\n=== Google Drive Backup Setup (rclone) ==="
+    if ! command -v rclone &>/dev/null; then
+        echo "rclone is not installed. Please install it first (e.g., 'sudo pacman -S rclone' or see https://rclone.org/install/)."
+        return 1
+    fi
+    echo "This will open the rclone config wizard. Follow the prompts to add a new Google Drive remote."
+    rclone config
+    read -p "Enter the rclone remote name you configured (e.g., 'gdrive'): " remote
+    read -p "Enter the folder path in your Google Drive for backups (e.g., 'valheim-backups'): " path
+    RCLONE_REMOTE="$remote"
+    RCLONE_PATH="$path"
+
+    # Ask for local backup folder name
+    read -p "Enter the local backup folder name (default: valheim-backups): " local_backup
+    local_backup=${local_backup:-valheim-backups}
+    BACKUP_DIR="./$local_backup"
+    mkdir -p "$BACKUP_DIR"
+    echo "Local backup folder set to: $BACKUP_DIR"
+
+    # Ask for number of backups to keep
+    read -p "How many backups do you want to keep? (default: 24): " max_bak
+    max_bak=${max_bak:-24}
+    MAX_BACKUPS="$max_bak"
+    echo "Will keep the last $MAX_BACKUPS backups."
+
+    # Save to .valheim.env (append or update)
+    grep -v '^RCLONE_REMOTE=' .valheim.env 2>/dev/null | \
+      grep -v '^RCLONE_PATH=' | \
+      grep -v '^BACKUP_DIR=' | \
+      grep -v '^MAX_BACKUPS=' > .valheim.env.tmp || true
+    mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+    echo "RCLONE_REMOTE=\"$RCLONE_REMOTE\"" >> .valheim.env
+    echo "RCLONE_PATH=\"$RCLONE_PATH\"" >> .valheim.env
+    echo "BACKUP_DIR=\"$BACKUP_DIR\"" >> .valheim.env
+    echo "MAX_BACKUPS=\"$MAX_BACKUPS\"" >> .valheim.env
+    echo "Google Drive backup configuration saved!"
+}
+
 setup_server_config() {
     echo "Let's set up your Valheim server configuration."
     read -p "Server Name [${SERVER_NAME}]: " input
@@ -496,6 +556,16 @@ SERVER_PUBLIC=${SERVER_PUBLIC}
 EOF
 
     echo "Configuration saved to .valheim.env!"
+
+    # Ask about Google Drive backup
+    while true; do
+        read -p "Would you like to set up Google Drive backup now? (y/n): " yn
+        case $yn in
+            [Yy]*) backup_storage_setup; break;;
+            [Nn]*) break;;
+            *) echo "Please answer y or n.";;
+        esac
+    done
 
     echo "Building the Docker image for the Valheim server..."
     docker build -t ${IMAGE_NAME} .
@@ -547,6 +617,9 @@ case "$1" in
         ;;
     setup)
         setup_server_config
+        ;;
+    backup-storage)
+        backup_storage_setup
         ;;
     "?")
         show_usage
