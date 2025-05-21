@@ -183,6 +183,12 @@ If you encounter any issues or have suggestions for improvements, please:
    - Check disk space: `df -h`
    - View server logs: `./server.sh logs`
 
+4. **`./server.sh gdrive-sync` won't complete**
+   - Interrupt the sync (CTRL + C)
+   - Restart it
+   - Google Drive is giving you a rate limit for transfers on your account. 
+      - Restarting it as a new transfer is the simplest way to remedy this.
+
 ## Steam Deck-Specific Notes
 
 1. **Power Management**
