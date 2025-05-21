@@ -222,11 +222,6 @@ start_server() {
     
     echo "Starting Valheim server..."
     echo "World data will be stored in: ${VALHEIM_DATA}/worlds_local"
-    # Debug: Print the password value
-    echo "Debug: SERVER_PASS value is: $SERVER_PASS"
-    # Debug: Print full docker command
-    echo "Debug: Running command:"
-    set -x
     # Start the server with updated volume mount for dedicated save path
     docker run -d --name $CONTAINER_NAME \
         -p 2456-2458:2456-2458/udp \
@@ -238,7 +233,6 @@ start_server() {
         -e SERVER_PUBLIC=$SERVER_PUBLIC \
         --restart unless-stopped \
         valheim-server:latest
-    set +x
 
     # Start hourly backup in background
     (
