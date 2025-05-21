@@ -4,6 +4,24 @@
 
 # Valheim Steam Deck Dedicated Server (SDDS)
 
+## Table of Contents
+- [Prerequisites](#prerequisites)
+- [Initial Setup](#initial-setup)
+- [Server Management](#server-management)
+- [Port Forwarding](#port-forwarding)
+- [Backup System](#backup-system)
+- [Google Drive Backup (Optional)](#google-drive-backup-optional)
+- [Monitoring](#monitoring)
+- [File Structure](#file-structure)
+- [About This Project](#about-this-project)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+- [Support](#support)
+- [Troubleshooting](#troubleshooting)
+- [Steam Deck-Specific Notes](#steam-deck-specific-notes)
+- [Security Notes](#security-notes)
+- [Contributing](#contributing)
+
 This repository contains scripts and configuration for running a lightweight vanilla Valheim dedicated server on your Steam Deck. The server runs in a Docker container with persistent storage and includes features for server management, backups, and player monitoring. It is intended to simplify standup using as few dependencies as possible to decrease resource draw.
 
 This may be ran on non-Steam Deck devices, but issues logged for these devices will be closed & ignored within this repository. This will run fine on anything that can run Docker containers, but some of the commands in this readme would need to be adjusted accordingly.
@@ -49,25 +67,27 @@ This may be ran on non-Steam Deck devices, but issues logged for these devices w
 
 The `server.sh` script provides several commands for managing your server:
 
-```bash
-./server.sh {command}
+| Command              | Description                                             |
+|----------------------|---------------------------------------------------------|
+| start                | Start the Valheim server                                |
+| stop                 | Stop the Valheim server                                 |
+| status               | Show server status                                      |
+| restart              | Restart the server                                      |
+| logs                 | Show server logs (follow mode)                          |
+| lastlog              | Show last 100 lines of logs                             |
+| backup               | Create a backup                                         |
+| players              | List all currently connected players                    |
+| check                | Check server accessibility                              |
+| setup                | Interactive server configuration and image build         |
+| gdrive-sync-setup    | Set up or update Google Drive (via rclone) backup integration |
+| gdrive-sync          | Manually sync backup directory to Google Drive           |
+| ?                    | Show this help message                                  |
 
-Commands:
-  start    - Start the Valheim server
-  stop     - Stop the Valheim server
-  status   - Show server status
-  restart  - Restart the server
-  logs     - Show server logs (follow mode)
-  lastlog  - Show last 100 lines of logs
-  backup   - Create a backup
-  chat     - Send message to all players
-  players  - List all currently connected players
-  check    - Check server accessibility
-  setup    - Interactive server configuration and image build
-  gdrive-sync-setup - Set up or update Google Drive (via rclone) backup integration
-  gdrive-sync - Manually sync backup directory to Google Drive
-  ?        - Show this help message
-```
+### Running Commands 
+
+   1.    Open your Valheim server folder ("Valheim-SteamDeck-DedicatedServer" by default)
+   2.    Right click the folder menu and select "Open Terminal Here"
+   3.    Run commands `./server.sh start`, `./server.sh gdrive-sync-setup`, etc.
 
 ## Port Forwarding
 
