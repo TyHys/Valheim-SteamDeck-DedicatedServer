@@ -482,8 +482,23 @@ check_data_persistence() {
 backup_storage_setup() {
     echo "\n=== Google Drive Backup Setup (rclone) ==="
     if ! command -v rclone &>/dev/null; then
-        echo "rclone is not installed. Please install it first (e.g., 'sudo pacman -S rclone' or see https://rclone.org/install/)."
-        return 1
+        echo "rclone is not installed."
+        read -p "Would you like to install rclone now? (y/n): " yn
+        case $yn in
+            [Yy]*)
+                if command -v pacman &>/dev/null; then
+                    echo "Installing rclone using pacman..."
+                    sudo pacman -S --noconfirm rclone || { echo "Failed to install rclone. Please install it manually."; return 1; }
+                else
+                    echo "Automatic install not supported on this system. Please install rclone manually (see https://rclone.org/install/)."
+                    return 1
+                fi
+                ;;
+            *)
+                echo "rclone is required for Google Drive backup. Skipping setup."
+                return 1
+                ;;
+        esac
     fi
     echo "This will open the rclone config wizard. Follow the prompts to add a new Google Drive remote."
     rclone config
