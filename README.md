@@ -77,7 +77,7 @@ The `server.sh` script provides several commands for managing your server:
 | lastlog              | Show last 100 lines of logs                             |
 | backup               | Create a backup                                         |
 | players              | List all currently connected players                    |
-| access               | Check server accessibility                              |
+| access               | Show server access information for LAN and WAN players  |
 | setup                | Interactive server configuration and image build         |
 | gdrive-sync-setup    | Set up or update Google Drive (via rclone) backup integration |
 | gdrive-sync          | Manually sync backup directory to Google Drive           |
@@ -90,13 +90,6 @@ The `server.sh` script provides several commands for managing your server:
    1.    Open your Valheim server folder ("Valheim-SteamDeck-DedicatedServer" by default)
    2.    Right click the folder menu and select "Open Terminal Here"
    3.    Run commands `./server.sh start`, `./server.sh gdrive-sync-setup`, etc.
-
-## Port Forwarding
-
-For players to connect from outside your network, forward these UDP ports in your router:
-- 2456 (Game port)
-- 2457 (Steam query port)
-- 2458 (Steam networking)
 
 ## Backup System
 
@@ -199,12 +192,11 @@ If you encounter any issues or have suggestions for improvements, please:
 
 1. **Server won't start**
    - Check logs: `./server.sh logs`
-   - Ensure ports aren't in use: `netstat -tulpn | grep 245`
    - Verify Docker is running: `systemctl status docker`
 
 2. **Players can't connect**
-   - Run: `./server.sh access` to get your public IP & verify port setup. This will not always correctly check the ports, so test with another person.
-   - Ensure UDP ports 2456-2458 are forwarded
+   - Run: `./server.sh access` to get your server's IP addresses and connection instructions.
+   - For external connections, ensure UDP ports 2456-2458 are correctly forwarded in your router/firewall to the server's local IP address (shown in `./server.sh access`).
 
 3. **Performance Issues**
    - Monitor system resources: `htop`
@@ -227,7 +219,7 @@ If you encounter any issues or have suggestions for improvements, please:
 2. **Network**
    - Ethernet connection recommended (via USB-C dock)
    - If using WiFi, stay close to router
-   - Static IP recommended
+   - A static IP for your Steam Deck on your local network is recommended for easier port forwarding.
 
 3. **Storage**
    - Monitor available space regularly

@@ -4,9 +4,9 @@
 # Server Configuration
 # =====================
 # Required settings - modify these for your server
-SERVER_NAME="YOUR_SERVER_NAME"          # The name that appears in the server browser
-WORLD_NAME="YOUR_WORLD_NAME"             # The name of your world
-SERVER_PASS="YOUR_SERVER_PASS"            # Must be at least 5 characters
+SERVER_NAME="TEWQWORLD"          # The name that appears in the server browser
+WORLD_NAME="florida"             # The name of your world
+SERVER_PASS="tewqy"            # Must be at least 5 characters
 SERVER_PUBLIC=1                # 1 for public, 0 for private
 
 # Advanced settings - change only if you know what you're doing
@@ -372,7 +372,7 @@ list_players() {
             fi
         elif echo "$line" | grep -q "Got character ZDOID from"; then
             # Player connected with character
-            player=$(echo "$line" | sed 's/.*Got character ZDOID from \([^ :]*\).*/\1/')
+            player=$(echo "$line" | awk 'match($0, /.*Got character ZDOID from (.*) : [0-9]+:[0-9]+$/, arr) {print arr[1]}')
             if [ ! -z "$player" ]; then
                 # Find the most recent waiting Steam ID
                 waiting_steamid=$(grep ":waiting:" "$TEMP_STEAMIDS" | head -n 1 | cut -d: -f1)
@@ -416,48 +416,42 @@ access_server() {
         return 1
     fi
 
-    echo "Checking Valheim server accessibility..."
+    echo "Valheim Server Access Information"
     echo "----------------------------------------"
     
-    # Get public IP
-    echo "🌐 Public IP:"
-    PUBLIC_IP=$(curl -s https://api.ipify.org)
-    echo "   $PUBLIC_IP"
-    echo ""
+    SERVER_IP=$(hostname -I | awk '{print $1}') # Get local IP
     
-    # Check local port bindings
-    echo "🔌 Local port bindings:"
-    for PORT in 2456 2457 2458; do
-        if netstat -ulpn 2>/dev/null | grep -q ":$PORT"; then
-            echo "   ✅ Port $PORT (UDP) is bound locally"
-        else
-            echo "   ❌ Port $PORT (UDP) is NOT bound locally"
-        fi
-    done
-    echo ""
-    
-    # Check if ports are reachable from outside
-    echo "🌍 External port check:"
-    echo "   Testing connection to ports 2456-2458..."
-    echo "   You can test your server from: https://www.yougetsignal.com/tools/open-ports/"
-    echo "   - Enter your IP: $PUBLIC_IP"
-    echo "   - Test ports: 2456, 2457, and 2458"
-    echo ""
-    
-    # Show Steam query info if available
-    echo "🎮 Steam server info:"
-    if command -v steamcmd &> /dev/null; then
-        steamcmd +login anonymous +query_port $PUBLIC_IP:2457 +quit
+    # Attempt to get public IP, fallback to N/A if curl fails or returns nothing
+    PUBLIC_IP_CURL_OUTPUT=$(curl -s https://api.ipify.org)
+    if [ -n "$PUBLIC_IP_CURL_OUTPUT" ]; then
+        PUBLIC_IP="$PUBLIC_IP_CURL_OUTPUT"
     else
-        echo "   Install steamcmd to query server info"
-        echo "   sudo apt-get install steamcmd"
+        PUBLIC_IP="N/A"
     fi
+
+    echo "🟢 Joining for Internal (LAN) Players:"
+    if [ -n "$SERVER_IP" ]; then
+        echo "   Connect to IP: $SERVER_IP:2456"
+    else
+        echo "   Could not determine local IP address."
+    fi
+    echo "   Server Name: $SERVER_NAME"
+    echo "   Password: $SERVER_PASS"
+    echo ""
+
+    echo "🌍 Joining for External (WAN/Internet) Players:"
+    if [ "$PUBLIC_IP" != "N/A" ]; then
+        echo "   Your Public IP: $PUBLIC_IP"
+        echo "   Players should try to connect to: $PUBLIC_IP:2456"
+        echo "   NOTE: This requires port forwarding (UDP ports 2456-2458) to be set up on your router, pointing to this server's local IP ($SERVER_IP)."
+    else
+        echo "   Could not determine public IP address. External access might not be possible without it."
+    fi
+    echo "   Server Name: $SERVER_NAME"
+    echo "   Password: $SERVER_PASS"
     echo ""
     
-    echo "✨ Connection information for players:"
-    echo "   Server IP: $PUBLIC_IP:2456"
-    echo "   Name: $SERVER_NAME"
-    echo "   Password: $SERVER_PASS"
+    echo "✨ If players cannot connect externally, ensure UDP ports 2456, 2457, and 2458 are correctly forwarded in your router/firewall to this server's local IP: $SERVER_IP"
 }
 
 # Function to cleanup cache
@@ -772,6 +766,9 @@ case "$1" in
         ;;
     setup)
         setup_server_config
+        ;;
+    data)
+        check_data_persistence
         ;;
     gdrive-sync-setup)
         backup_storage_setup
