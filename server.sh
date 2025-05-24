@@ -4,9 +4,9 @@
 # Server Configuration
 # =====================
 # Required settings - modify these for your server
-SERVER_NAME="TEWQWORLD"          # The name that appears in the server browser
-WORLD_NAME="florida"             # The name of your world
-SERVER_PASS="tewqy"            # Must be at least 5 characters
+SERVER_NAME="YOUR_SERVER_NAME"          # The name that appears in the server browser
+WORLD_NAME="YOUR_WORLD_NAME"             # The name of your world
+SERVER_PASS="YOUR_SERVER_PASS"            # Must be at least 5 characters
 SERVER_PUBLIC=1                # 1 for public, 0 for private
 
 # Advanced settings - change only if you know what you're doing
@@ -217,7 +217,7 @@ check_backup_scheduler() {
         backup_pid=$(cat /tmp/valheim_backup_pid)
         if kill -0 $backup_pid 2>/dev/null; then
             echo "Killing existing backup loop (PID $backup_pid)..."
-            kill $backup_pid
+            c $backup_pid
         fi
         rm -f /tmp/valheim_backup_pid
     fi
