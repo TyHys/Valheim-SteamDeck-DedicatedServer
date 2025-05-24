@@ -4,9 +4,9 @@
 # Server Configuration
 # =====================
 # Required settings - modify these for your server
-SERVER_NAME="TEWQWORLD"          # The name that appears in the server browser
-WORLD_NAME="florida"             # The name of your world
-SERVER_PASS="tewqy"            # Must be at least 5 characters
+SERVER_NAME="YOUR_SERVER_NAME"          # The name that appears in the server browser
+WORLD_NAME="YOUR_WORLD_NAME"             # The name of your world
+SERVER_PASS="YOUR_PASSWORD"            # Must be at least 5 characters
 SERVER_PUBLIC=1                # 1 for public, 0 for private
 
 # Advanced settings - change only if you know what you're doing

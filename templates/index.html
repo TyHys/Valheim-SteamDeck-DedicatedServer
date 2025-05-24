@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Valheim Server Control</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #2c3e50; }
+        .commands { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; justify-content: center; }
+        .commands button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 14px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .commands button:hover { background-color: #2980b9; }
+        .commands button:active { background-color: #2471a3; }
+        #output { white-space: pre-wrap; background-color: #ecf0f1; border: 1px solid #bdc3c7; padding: 15px; border-radius: 5px; min-height: 100px; font-family: monospace; }
+        .status-success { color: green; }
+        .status-error { color: red; }
+        .loader {
+            border: 4px solid #f3f3f3; /* Light grey */
+            border-top: 4px solid #3498db; /* Blue */
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: none; /* Hidden by default */
+            margin: 10px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Valheim Server Control</h1>
+        <div class="commands">
+            {% for cmd in commands %}
+            <button onclick="runCommand('{{ cmd }}')">{{ cmd.replace('-', ' ').title() }}</button>
+            {% endfor %}
+        </div>
+        <div class="loader" id="loader"></div>
+        <h3>Output:</h3>
+        <pre id="output"></pre>
+    </div>
+
+    <script>
+        async function runCommand(command) {
+            const outputArea = document.getElementById('output');
+            const loader = document.getElementById('loader');
+            outputArea.textContent = ''; // Clear previous output
+            outputArea.className = ''; // Clear previous status class
+            loader.style.display = 'block'; // Show loader
+
+            try {
+                const response = await fetch('/run_command/' + command);
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    outputArea.textContent = data.output;
+                    outputArea.classList.add('status-success');
+                } else {
+                    outputArea.textContent = 'Error: ' + data.output;
+                    outputArea.classList.add('status-error');
+                }
+            } catch (error) {
+                outputArea.textContent = 'Fetch Error: ' + error;
+                outputArea.classList.add('status-error');
+            }
+            loader.style.display = 'none'; // Hide loader
+        }
+    </script>
+</body>
+</html> 
