@@ -20,24 +20,24 @@ fi
 # =====================
 # Server Configuration
 # =====================
-# Run ./server.sh & select "Server Settings" or run './server.sh setup'. The values below will be overwritten.
-# Note: You can run this setup again at any time by running ./server.sh or by selecting "Server Settings" from the ./server.sh menu
-SERVER_NAME="YOUR_SERVER_NAME"          # The name that appears in the server browser
-WORLD_NAME="YOUR_WORLD_NAME"             # The name of your world
-SERVER_PASS="YOUR_PASSWORD"            # Must be at least 5 characters
-SERVER_PUBLIC=1                # 1 for public, 0 for private
+# Server configuration is stored in .valheim.env
+# To configure your server, either:
+# 1. Run ./server.sh and select "Server Settings" from the menu
+# 2. Run ./server.sh setup
+# Do NOT edit these values directly in this file!
 
 # Advanced settings - change only if you know what you're doing
-CONTAINER_NAME="valheim-server"
-IMAGE_NAME="valheim-server"
-VALHEIM_DATA="./valheim-data"
-BACKUP_DIR="./valheim-backups"
+CONTAINER_NAME="valheim-devserver"
+IMAGE_NAME="valheim-devserver"
+VALHEIM_DATA="./valheim-devdata"
+BACKUP_DIR="./valheim-devbackups"
 MAX_BACKUPS=24                 # Keep last 24 backups
-CACHE_VOLUME="valheim-cache"   # Docker volume for caching
+CACHE_VOLUME="valheim-devcache"   # Docker volume for caching
 
-# Google Drive/rclone backup config
-RCLONE_REMOTE=""
-RCLONE_PATH=""
+# Google Drive backup configuration is stored in .valheim.env
+# To configure Google Drive backup:
+# 1. Run ./server.sh and select "Backup Management" -> "Configure Google Drive Sync"
+# 2. Run ./server.sh gdrive-sync-setup
 
 # Load config from .valheim.env if it exists
 if [ -f .valheim.env ]; then
@@ -856,13 +856,13 @@ show_menu() {
             "2"  "Stop Server.............🔴" \
             "3"  "Show Server Status......🟡" \
             "4"  "Restart Server..........♻️ " \
-            "5"  "List Players...........👥" \
+            "5"  "List Players............👥" \
             "6"  "View Server Logs........📜" \
             "7"  "Backup Management.......💾" \
-            "8"  "Server Settings........⚙️ " \
+            "8"  "Server Settings.........⚙️ " \
             "9"  "Server Access Info......🌐" \
             "10" "Clear All Logs..........🧹" \
-            "11" "Exit...................❌" \
+            "11" "Exit....................❌" \
             3>&1 1>&2 2>&3)
 
         if [ $? -ne 0 ]; then
@@ -1222,7 +1222,8 @@ show_menu() {
 INITIAL_SETUP_ASKED=0
 if [ -f .valheim.env ]; then
     source .valheim.env
-    if [ "$INITIAL_SETUP_ASKED" = "1" ]; then
+    # Check if we have the required configuration variables
+    if [ -n "$SERVER_NAME" ] && [ -n "$WORLD_NAME" ] && [ -n "$SERVER_PASS" ]; then
         INITIAL_SETUP_ASKED=1
     fi
 fi
@@ -1230,30 +1231,34 @@ fi
 if [ "$INITIAL_SETUP_ASKED" != "1" ]; then
     if command -v whiptail >/dev/null 2>&1; then
         if whiptail --title "Initial Setup" --yesno "Would you like to run the server configuration process now?" 10 78; then
+            setup_server_config
+            # Only set INITIAL_SETUP_ASKED=1 after successful setup
             grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
             mv .valheim.env.tmp .valheim.env 2>/dev/null || true
             echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
-            setup_server_config
             exit 0
         else
+            # If user declines setup, still mark as asked but not completed
             grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
             mv .valheim.env.tmp .valheim.env 2>/dev/null || true
-            echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
+            echo "INITIAL_SETUP_ASKED=0" >> .valheim.env
             exit 0
         fi
     else
         echo "Would you like to run the server configuration process now? (y/n): "
         read yn
         if [[ "$yn" =~ ^[Yy]$ ]]; then
+            setup_server_config
+            # Only set INITIAL_SETUP_ASKED=1 after successful setup
             grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
             mv .valheim.env.tmp .valheim.env 2>/dev/null || true
             echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
-            setup_server_config
             exit 0
         else
+            # If user declines setup, still mark as asked but not completed
             grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
             mv .valheim.env.tmp .valheim.env 2>/dev/null || true
-            echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
+            echo "INITIAL_SETUP_ASKED=0" >> .valheim.env
             exit 0
         fi
     fi
