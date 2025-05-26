@@ -20,7 +20,8 @@ fi
 # =====================
 # Server Configuration
 # =====================
-# Required settings - modify these for your server
+# Run ./server.sh & select "Server Settings" or run './server.sh setup'. The values below will be overwritten.
+# Note: You can run this setup again at any time by running ./server.sh or by selecting "Server Settings" from the ./server.sh menu
 SERVER_NAME="YOUR_SERVER_NAME"          # The name that appears in the server browser
 WORLD_NAME="YOUR_WORLD_NAME"             # The name of your world
 SERVER_PASS="YOUR_PASSWORD"            # Must be at least 5 characters
@@ -43,36 +44,7 @@ if [ -f .valheim.env ]; then
     source .valheim.env
 fi
 
-# Global config check at startup
-REQUIRED_VARS=(SERVER_NAME WORLD_NAME SERVER_PASS SERVER_PUBLIC)
-NEEDS_CONFIG=0
-
-if [ ! -f .valheim.env ]; then
-    NEEDS_CONFIG=1
-else
-    source .valheim.env
-    for var in "${REQUIRED_VARS[@]}"; do
-        val="${!var}"
-        if [ -z "$val" ] || [[ "$val" == "YOUR_SERVER_NAME" ]] || [[ "$val" == "YOUR_WORLD_NAME" ]] || [[ "$val" == "YOUR_PASSWORD" ]]; then
-            NEEDS_CONFIG=1
-            break
-        fi
-    done
-fi
-
-if [ $NEEDS_CONFIG -eq 1 ]; then
-    if command -v whiptail >/dev/null 2>&1; then
-        if whiptail --title "Server Not Configured" --yesno "It looks like the server has not been configured yet or .valheim.env is incomplete.\n\nWould you like to run the server configuration process now?" 12 78; then
-            setup_server_config
-        fi
-    else
-        echo "It looks like the server has not been configured yet or .valheim.env is incomplete."
-        read -p "Would you like to run the server configuration process now? (y/n): " yn
-        if [[ "$yn" =~ ^[Yy]$ ]]; then
-            setup_server_config
-        fi
-    fi
-fi
+# All function definitions above this line
 
 # Function to handle sudo with password prompt
 sudo_handler() {
@@ -102,55 +74,158 @@ sudo_handler() {
     return $result
 }
 
-# Ensure data directories exist with correct permissions
-setup_data_directories() {
-    echo "Setting up data directories..."
-    # Create the directory structure for the -savedir path
-    mkdir -p "${VALHEIM_DATA}/worlds_local"
-    mkdir -p "${VALHEIM_DATA}/worlds"
-    mkdir -p "${VALHEIM_DATA}/characters"
-    mkdir -p "${VALHEIM_DATA}/saves"
-    
-    # Attempt to set ownership to UID 1000, GID 1000 (common for default user / steam user)
-    if ! sudo_handler "chown -R 1000:1000 \"${VALHEIM_DATA}\""; then
-        whiptail --title "Warning" --msgbox "Failed to set directory permissions.\nManual permission adjustment may be needed." 8 78
+# Function to set up rclone/Google Drive backup
+backup_storage_setup() {
+    if ! command -v rclone &>/dev/null; then
+        if (whiptail --title "rclone Installation" --yesno "rclone is not installed. Would you like to install it now?" 8 78); then
+            if command -v pacman &>/dev/null; then
+                {
+                    echo "10"; echo "XXX"; echo "Installing rclone..."; echo "XXX"
+                    sudo_handler "pacman -S --noconfirm rclone"
+                    echo "100"; echo "XXX"; echo "Installation complete!"; echo "XXX"
+                } | whiptail --title "Installing rclone" --gauge "Please wait..." 8 78 0
+            else
+                whiptail --title "Error" --msgbox "Automatic install not supported on this system.\nPlease install rclone manually (see https://rclone.org/install/)." 10 78
+                return 1
+            fi
+        else
+            return 1
+        fi
     fi
-    chmod -R u+rwx,g+rwx,o+rx "${VALHEIM_DATA}"
+
+    # Get remote name
+    local default_remote=${RCLONE_REMOTE:-VALHEIM-SDDS}
+    local remote=$(whiptail --title "rclone Configuration" --inputbox "Enter the rclone remote name to use for Google Drive:" 8 78 "$default_remote" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+
+    # Check if remote exists and offer to reconfigure
+    if rclone listremotes | grep -q "^$remote:"; then
+        if (whiptail --title "Existing Remote" --yesno "Remote '$remote' already exists. Would you like to reconfigure it?" 8 78); then
+            {
+                echo "25"; echo "XXX"; echo "Deleting existing remote..."; echo "XXX"
+                rclone config delete "$remote" --non-interactive
+                echo "100"; echo "XXX"; echo "Remote deleted!"; echo "XXX"
+            } | whiptail --title "Configuring rclone" --gauge "Please wait..." 8 78 0
+        else
+            # If not reconfiguring, just get the backup path
+            local default_path=${RCLONE_PATH:-valheim-backups}
+            local path=$(whiptail --title "Backup Location" --inputbox "Enter the folder path in your Google Drive for backups:" 8 78 "$default_path" 3>&1 1>&2 2>&3)
+            if [ $? -ne 0 ]; then return 1; fi
+            RCLONE_REMOTE="$remote"
+            RCLONE_PATH="$path"
+            return 0
+        fi
+    fi
+
+    # Automate rclone config create (type=drive, scope=drive.file)
+    {
+        echo "0"; echo "XXX"; echo "Creating rclone remote..."; echo "XXX"
+        rclone config create "$remote" drive scope=drive.file --non-interactive
+        echo "100"; echo "XXX"; echo "Remote created!"; echo "XXX"
+    } | whiptail --title "Configuring rclone" --gauge "Please wait..." 8 78 0
+
+    # Prompt user to do OAuth via rclone config reconnect
+    whiptail --title "Google Drive Authentication" --msgbox "The next step will open a prompt in your terminal.\n\nYou will see a URL to copy and open in your browser.\n\nAfter authenticating, paste the code back into the terminal.\n\nPress OK to continue." 14 78
+    rclone config reconnect "$remote:"
+
+    # After rclone config, continue in whiptail
+    local default_path=${RCLONE_PATH:-valheim-backups}
+    local path=$(whiptail --title "Backup Location" --inputbox "Enter the folder path in your Google Drive for backups:" 8 78 "$default_path" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+
+    # Save configuration
+    RCLONE_REMOTE="$remote"
+    RCLONE_PATH="$path"
+
+    # Update .valheim.env
+    {
+        grep -v '^RCLONE_REMOTE=' .valheim.env 2>/dev/null | grep -v '^RCLONE_PATH=' > .valheim.env.tmp || true
+        mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+        echo "RCLONE_REMOTE=$RCLONE_REMOTE" >> .valheim.env
+        echo "RCLONE_PATH=$RCLONE_PATH" >> .valheim.env
+    }
+
+    whiptail --title "Success" --msgbox "Google Drive backup configuration saved!\n\nRemote: $RCLONE_REMOTE\nPath: $RCLONE_PATH" 10 78
+
+    # Re-source .valheim.env
+    if [ -f .valheim.env ]; then
+        source .valheim.env
+    fi
 }
 
-# Validate configuration
-validate_config() {
-    local error=0
-    
-    if [ -z "$SERVER_NAME" ]; then
-        echo "Error: SERVER_NAME cannot be empty"
-        error=1
+# Function to set up server configuration
+setup_server_config() {
+    # Server Name
+    local server_name=$(whiptail --title "Server Configuration" --inputbox "Enter Server Name:" 8 78 "${SERVER_NAME}" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+    SERVER_NAME="$server_name"
+
+    # World Name
+    local world_name=$(whiptail --title "Server Configuration" --inputbox "Enter World Name:" 8 78 "${WORLD_NAME}" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+    WORLD_NAME="$world_name"
+
+    # Server Password
+    while true; do
+        local server_pass=$(whiptail --title "Server Configuration" --passwordbox "Enter Server Password (min 5 chars):" 8 78 "${SERVER_PASS}" 3>&1 1>&2 2>&3)
+        if [ $? -ne 0 ]; then return 1; fi
+        if [ ${#server_pass} -ge 5 ]; then
+            SERVER_PASS="$server_pass"
+            break
+        else
+            whiptail --title "Error" --msgbox "Password must be at least 5 characters long." 8 78
+        fi
+    done
+
+    # Server Public Setting
+    if (whiptail --title "Server Configuration" --yesno "Make server public?" 8 78); then
+        SERVER_PUBLIC=1
+    else
+        SERVER_PUBLIC=0
     fi
-    
-    if [ -z "$WORLD_NAME" ]; then
-        echo "Error: WORLD_NAME cannot be empty"
-        error=1
+
+    # Backup Settings
+    local default_backup=${BACKUP_DIR#./}
+    local backup_dir=$(whiptail --title "Backup Configuration" --inputbox "Enter local backup folder name:" 8 78 "$default_backup" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+    BACKUP_DIR="./$backup_dir"
+    mkdir -p "$BACKUP_DIR"
+
+    local default_max_bak=${MAX_BACKUPS:-24}
+    local max_backups=$(whiptail --title "Backup Configuration" --inputbox "How many backups to keep?" 8 78 "$default_max_bak" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+    MAX_BACKUPS="$max_backups"
+
+    local default_interval=${BACKUP_INTERVAL_HOURS:-1}
+    local backup_interval=$(whiptail --title "Backup Configuration" --inputbox "Hours between automatic backups:" 8 78 "$default_interval" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+    BACKUP_INTERVAL_HOURS="$backup_interval"
+
+    # Save configuration to .valheim.env
+    {
+        echo "SERVER_NAME=$SERVER_NAME"
+        echo "WORLD_NAME=$WORLD_NAME"
+        echo "SERVER_PASS=$SERVER_PASS"
+        echo "SERVER_PUBLIC=$SERVER_PUBLIC"
+        echo "BACKUP_DIR=$BACKUP_DIR"
+        echo "MAX_BACKUPS=$MAX_BACKUPS"
+        echo "BACKUP_INTERVAL_HOURS=$BACKUP_INTERVAL_HOURS"
+    } > .valheim.env
+
+    # Ask about Google Drive backup
+    if (whiptail --title "Google Drive Setup" --yesno "Would you like to set up Google Drive backup now?\n(This can be done later using the backup menu)" 10 78); then
+        backup_storage_setup
     fi
-    
-    if [ ${#SERVER_PASS} -lt 5 ]; then
-        echo "Error: SERVER_PASS must be at least 5 characters long"
-        error=1
-    fi
-    
-    if [ "$SERVER_PUBLIC" != "0" ] && [ "$SERVER_PUBLIC" != "1" ]; then
-        echo "Error: SERVER_PUBLIC must be 0 or 1"
-        error=1
-    fi
-    
-    if [ $error -eq 1 ]; then
-        exit 1
-    fi
+
+    # Build Docker image
+    {
+        echo "0"; echo "XXX"; echo "Building Docker image..."; echo "XXX"
+        docker build -t ${IMAGE_NAME} . >/dev/null 2>&1
+        echo "100"; echo "XXX"; echo "Build complete!"; echo "XXX"
+    } | whiptail --title "Building Server Image" --gauge "Please wait..." 8 78 0
+
+    whiptail --title "Success" --msgbox "Server configuration completed!\n\nYou can now start your server from the main menu." 10 78
 }
-
-# Call validation before any operation
-validate_config
-
-# DNS_NAME="valheim.imdy.in"  # Your DNS name
 
 # Function to show usage
 show_usage() {
@@ -693,104 +768,6 @@ check_data_persistence() {
     whiptail --title "Data Persistence Check" --scrolltext --msgbox "$output" 24 78
 }
 
-# Function to set up rclone/Google Drive backup
-backup_storage_setup() {
-    if ! command -v rclone &>/dev/null; then
-        if (whiptail --title "rclone Installation" --yesno "rclone is not installed. Would you like to install it now?" 8 78); then
-            if command -v pacman &>/dev/null; then
-                {
-                    echo "10"; echo "XXX"; echo "Installing rclone..."; echo "XXX"
-                    sudo_handler "pacman -S --noconfirm rclone"
-                    echo "100"; echo "XXX"; echo "Installation complete!"; echo "XXX"
-                } | whiptail --title "Installing rclone" --gauge "Please wait..." 8 78 0
-            else
-                whiptail --title "Error" --msgbox "Automatic install not supported on this system.\nPlease install rclone manually (see https://rclone.org/install/)." 10 78
-                return 1
-            fi
-        else
-            return 1
-        fi
-    fi
-
-    # Get remote name
-    local default_remote=${RCLONE_REMOTE:-VALHEIM-SDDS}
-    local remote=$(whiptail --title "rclone Configuration" --inputbox "Enter the rclone remote name to use for Google Drive:" 8 78 "$default_remote" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then return 1; fi
-
-    # Check if remote exists and offer to reconfigure
-    if rclone listremotes | grep -q "^$remote:"; then
-        if (whiptail --title "Existing Remote" --yesno "Remote '$remote' already exists. Would you like to reconfigure it?" 8 78); then
-            {
-                echo "25"; echo "XXX"; echo "Deleting existing remote..."; echo "XXX"
-                rclone config delete "$remote" --non-interactive
-                echo "100"; echo "XXX"; echo "Remote deleted!"; echo "XXX"
-            } | whiptail --title "Configuring rclone" --gauge "Please wait..." 8 78 0
-        else
-            # If not reconfiguring, just get the backup path
-            local default_path=${RCLONE_PATH:-valheim-backups}
-            local path=$(whiptail --title "Backup Location" --inputbox "Enter the folder path in your Google Drive for backups:" 8 78 "$default_path" 3>&1 1>&2 2>&3)
-            if [ $? -ne 0 ]; then return 1; fi
-            RCLONE_REMOTE="$remote"
-            RCLONE_PATH="$path"
-            return 0
-        fi
-    fi
-
-    # Automate rclone config create (type=drive, scope=drive.file)
-    {
-        echo "0"; echo "XXX"; echo "Creating rclone remote..."; echo "XXX"
-        rclone config create "$remote" drive scope=drive.file --non-interactive
-        echo "100"; echo "XXX"; echo "Remote created!"; echo "XXX"
-    } | whiptail --title "Configuring rclone" --gauge "Please wait..." 8 78 0
-
-    # Prompt user to do OAuth via rclone config reconnect
-    whiptail --title "Google Drive Authentication" --msgbox "The next step will open a prompt in your terminal.\n\nYou will see a URL to copy and open in your browser.\n\nAfter authenticating, paste the code back into the terminal.\n\nPress OK to continue." 14 78
-    rclone config reconnect "$remote:"
-
-    # After rclone config, continue in whiptail
-    local default_path=${RCLONE_PATH:-valheim-backups}
-    local path=$(whiptail --title "Backup Location" --inputbox "Enter the folder path in your Google Drive for backups:" 8 78 "$default_path" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then return 1; fi
-
-    # Save configuration
-    RCLONE_REMOTE="$remote"
-    RCLONE_PATH="$path"
-
-    # Update .valheim.env
-    {
-        grep -v '^RCLONE_REMOTE=' .valheim.env 2>/dev/null | grep -v '^RCLONE_PATH=' > .valheim.env.tmp || true
-        mv .valheim.env.tmp .valheim.env 2>/dev/null || true
-        echo "RCLONE_REMOTE=$RCLONE_REMOTE" >> .valheim.env
-        echo "RCLONE_PATH=$RCLONE_PATH" >> .valheim.env
-    }
-
-    whiptail --title "Success" --msgbox "Google Drive backup configuration saved!\n\nRemote: $RCLONE_REMOTE\nPath: $RCLONE_PATH" 10 78
-
-    # Re-source .valheim.env
-    if [ -f .valheim.env ]; then
-        source .valheim.env
-    fi
-}
-
-# Function to manually sync backup directory to Google Drive
-gdrive_sync() {
-    if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
-        if command -v rclone &>/dev/null; then
-            {
-                echo "0"; echo "XXX"; echo "Starting sync to Google Drive..."; echo "XXX"
-                rclone sync -P --transfers=3 "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" 2>&1
-                echo "100"; echo "XXX"; echo "Sync completed!"; echo "XXX"
-            } | whiptail --title "Google Drive Sync" --gauge "Syncing backups to Google Drive..." 8 78 0
-            
-            whiptail --title "Success" --msgbox "Local backup directory synced to Google Drive!\n\nLocal: $BACKUP_DIR\nRemote: $RCLONE_REMOTE:$RCLONE_PATH/" 10 78
-        else
-            whiptail --title "Error" --msgbox "rclone is not installed. Please run the Google Drive setup first." 8 78
-        fi
-    else
-        whiptail --title "Error" --msgbox "Google Drive sync is not configured.\nRun the Google Drive setup first." 8 78
-    fi
-}
-
 # Function to describe the backup schedule in human language
 backup_schedule() {
     # Check if the backup scheduler is running
@@ -1241,79 +1218,78 @@ show_menu() {
     done
 }
 
-# Function to set up server configuration
-setup_server_config() {
-    # Server Name
-    local server_name=$(whiptail --title "Server Configuration" --inputbox "Enter Server Name:" 8 78 "${SERVER_NAME}" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then return 1; fi
-    SERVER_NAME="$server_name"
+# Ask-only-once setup logic using .valheim.env
+INITIAL_SETUP_ASKED=0
+if [ -f .valheim.env ]; then
+    source .valheim.env
+    if [ "$INITIAL_SETUP_ASKED" = "1" ]; then
+        INITIAL_SETUP_ASKED=1
+    fi
+fi
 
-    # World Name
-    local world_name=$(whiptail --title "Server Configuration" --inputbox "Enter World Name:" 8 78 "${WORLD_NAME}" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then return 1; fi
-    WORLD_NAME="$world_name"
-
-    # Server Password
-    while true; do
-        local server_pass=$(whiptail --title "Server Configuration" --passwordbox "Enter Server Password (min 5 chars):" 8 78 "${SERVER_PASS}" 3>&1 1>&2 2>&3)
-        if [ $? -ne 0 ]; then return 1; fi
-        if [ ${#server_pass} -ge 5 ]; then
-            SERVER_PASS="$server_pass"
-            break
+if [ "$INITIAL_SETUP_ASKED" != "1" ]; then
+    if command -v whiptail >/dev/null 2>&1; then
+        if whiptail --title "Initial Setup" --yesno "Would you like to run the server configuration process now?" 10 78; then
+            grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
+            mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+            echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
+            setup_server_config
+            exit 0
         else
-            whiptail --title "Error" --msgbox "Password must be at least 5 characters long." 8 78
+            grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
+            mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+            echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
+            exit 0
         fi
-    done
-
-    # Server Public Setting
-    if (whiptail --title "Server Configuration" --yesno "Make server public?" 8 78); then
-        SERVER_PUBLIC=1
     else
-        SERVER_PUBLIC=0
+        echo "Would you like to run the server configuration process now? (y/n): "
+        read yn
+        if [[ "$yn" =~ ^[Yy]$ ]]; then
+            grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
+            mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+            echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
+            setup_server_config
+            exit 0
+        else
+            grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
+            mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+            echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
+            exit 0
+        fi
     fi
+fi
 
-    # Backup Settings
-    local default_backup=${BACKUP_DIR#./}
-    local backup_dir=$(whiptail --title "Backup Configuration" --inputbox "Enter local backup folder name:" 8 78 "$default_backup" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then return 1; fi
-    BACKUP_DIR="./$backup_dir"
-    mkdir -p "$BACKUP_DIR"
-
-    local default_max_bak=${MAX_BACKUPS:-24}
-    local max_backups=$(whiptail --title "Backup Configuration" --inputbox "How many backups to keep?" 8 78 "$default_max_bak" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then return 1; fi
-    MAX_BACKUPS="$max_backups"
-
-    local default_interval=${BACKUP_INTERVAL_HOURS:-1}
-    local backup_interval=$(whiptail --title "Backup Configuration" --inputbox "Hours between automatic backups:" 8 78 "$default_interval" 3>&1 1>&2 2>&3)
-    if [ $? -ne 0 ]; then return 1; fi
-    BACKUP_INTERVAL_HOURS="$backup_interval"
-
-    # Save configuration to .valheim.env
-    {
-        echo "SERVER_NAME=$SERVER_NAME"
-        echo "WORLD_NAME=$WORLD_NAME"
-        echo "SERVER_PASS=$SERVER_PASS"
-        echo "SERVER_PUBLIC=$SERVER_PUBLIC"
-        echo "BACKUP_DIR=$BACKUP_DIR"
-        echo "MAX_BACKUPS=$MAX_BACKUPS"
-        echo "BACKUP_INTERVAL_HOURS=$BACKUP_INTERVAL_HOURS"
-    } > .valheim.env
-
-    # Ask about Google Drive backup
-    if (whiptail --title "Google Drive Setup" --yesno "Would you like to set up Google Drive backup now?\n(This can be done later using the backup menu)" 10 78); then
-        backup_storage_setup
+# Validate configuration
+validate_config() {
+    local error=0
+    
+    if [ -z "$SERVER_NAME" ]; then
+        echo "Error: SERVER_NAME cannot be empty"
+        error=1
     fi
-
-    # Build Docker image
-    {
-        echo "0"; echo "XXX"; echo "Building Docker image..."; echo "XXX"
-        docker build -t ${IMAGE_NAME} . >/dev/null 2>&1
-        echo "100"; echo "XXX"; echo "Build complete!"; echo "XXX"
-    } | whiptail --title "Building Server Image" --gauge "Please wait..." 8 78 0
-
-    whiptail --title "Success" --msgbox "Server configuration completed!\n\nYou can now start your server from the main menu." 10 78
+    
+    if [ -z "$WORLD_NAME" ]; then
+        echo "Error: WORLD_NAME cannot be empty"
+        error=1
+    fi
+    
+    if [ ${#SERVER_PASS} -lt 5 ]; then
+        echo "Error: SERVER_PASS must be at least 5 characters long"
+        error=1
+    fi
+    
+    if [ "$SERVER_PUBLIC" != "0" ] && [ "$SERVER_PUBLIC" != "1" ]; then
+        echo "Error: SERVER_PUBLIC must be 0 or 1"
+        error=1
+    fi
+    
+    if [ $error -eq 1 ]; then
+        exit 1
+    fi
 }
+
+# Call validation before any operation
+validate_config
 
 # Main script
 if [ $# -eq 0 ]; then
