@@ -1,5 +1,5 @@
 # Base image for building
-FROM cm2network/steamcmd:root as steamcmd
+FROM cm2network/steamcmd:root AS steamcmd
 
 # Set environment variables
 ENV STEAM_APPID=896660
@@ -52,4 +52,4 @@ EXPOSE 2456-2458/udp
 
 # Set the entrypoint
 # SERVER_NAME, WORLD_NAME, SERVER_PASS, and SERVER_PUBLIC must be provided via environment variables
-ENTRYPOINT ./valheim_server.x86_64 -name "${SERVER_NAME}" -world "${WORLD_NAME}" -password "${SERVER_PASS}" -public "${SERVER_PUBLIC}" -savedir "${VALHEIM_SAVE_PATH}"
+ENTRYPOINT ["sh", "-c", "./valheim_server.x86_64 -name \"${SERVER_NAME}\" -world \"${WORLD_NAME}\" -password \"${SERVER_PASS}\" -public \"${SERVER_PUBLIC}\" -savedir \"${VALHEIM_SAVE_PATH}\""]
