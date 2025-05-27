@@ -27,12 +27,12 @@ fi
 # Do NOT edit these values directly in this file!
 
 # Advanced settings - change only if you know what you're doing
-CONTAINER_NAME="valheim-devserver"
-IMAGE_NAME="valheim-devserver"
-VALHEIM_DATA="./valheim-devdata"
-BACKUP_DIR="./valheim-devbackups"
+CONTAINER_NAME="valheim-server"
+IMAGE_NAME="valheim-server"
+VALHEIM_DATA="./valheim-data"
+BACKUP_DIR="./valheim-backups"
 MAX_BACKUPS=24                 # Keep last 24 backups
-CACHE_VOLUME="valheim-devcache"   # Docker volume for caching
+CACHE_VOLUME="valheim-cache"   # Docker volume for caching
 
 # Google Drive backup configuration is stored in .valheim.env
 # To configure Google Drive backup:
