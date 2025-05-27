@@ -253,8 +253,13 @@ show_usage() {
 
 # Function to check if server is running
 is_running() {
-    docker ps | grep -q $CONTAINER_NAME
-    return $?
+    # Check if container exists and is running
+    if docker container inspect $CONTAINER_NAME >/dev/null 2>&1; then
+        local status=$(docker container inspect -f '{{.State.Status}}' $CONTAINER_NAME 2>/dev/null)
+        [ "$status" = "running" ]
+        return $?
+    fi
+    return 1
 }
 
 # Function to create backup
@@ -1027,21 +1032,34 @@ show_menu() {
                 ;;
             "4")
                 if (whiptail --title "Confirm Restart" --yesno "Are you sure you want to restart the server?" 8 78); then
-                    {
-                        echo "0"; echo "XXX"; echo "Stopping server..."; echo "XXX"
-                        stop_server >/dev/null 2>&1
-                        echo "33"; echo "XXX"; echo "Waiting for clean shutdown..."; echo "XXX"
-                        sleep 5
-                        echo "66"; echo "XXX"; echo "Starting server..."; echo "XXX"
-                        OUTPUT=$(start_server 2>&1)
-                        echo "100"; echo "XXX"; echo "Restart complete!"; echo "XXX"
-                    } | whiptail --title "Restarting Server" --gauge "Please wait..." 8 78 0
-                    
-                    if is_running; then
-                        whiptail --title "Success" --msgbox "Server restarted successfully!\n\n$OUTPUT" 12 78
-                    else
-                        whiptail --title "Error" --msgbox "Failed to restart server.\n\n$OUTPUT" 12 78
+                    # Request sudo access upfront if needed
+                    if ! sudo -n true 2>/dev/null; then
+                        current_user=$(whoami)
+                        password=$(whiptail --title "Sudo Required" \
+                            --passwordbox "\nRestarting the server requires sudo privileges.\nEnter password for user '$current_user':" \
+                            12 78 3>&1 1>&2 2>&3)
+                        if [ $? -ne 0 ]; then
+                            continue
+                        fi
+                        # Test sudo access
+                        if ! echo "$password" | sudo -S true 2>/dev/null; then
+                            whiptail --title "Error" --msgbox "Invalid password for user '$current_user' or sudo access denied." 8 78
+                            continue
+                        fi
                     fi
+
+                    # Show message about returning to menu
+                    whiptail --title "Restarting Server" --msgbox "The server will now restart.\nYou will be returned to the main menu once the restart is complete." 8 78
+
+                    # Execute restart commands with loading message
+                    (
+                        stop_server >/dev/null 2>&1
+                        sleep 5
+                        start_server >/dev/null 2>&1
+                    ) | whiptail --title "Restarting Server" --infobox "Please wait while the server restarts..." 8 78
+
+                    # Force return to menu
+                    continue
                 fi
                 ;;
             "5")
@@ -1100,7 +1118,6 @@ show_menu() {
                         "2")
                             clear
                             restore_server
-                            read -p "Press Enter to continue..."
                             ;;
                         "3")
                             OUTPUT=$(capture_output "backup_schedule")
@@ -1109,7 +1126,6 @@ show_menu() {
                         "4")
                             clear
                             backup_storage_setup
-                            read -p "Press Enter to continue..."
                             ;;
                         "5")
                             OUTPUT=$(capture_output "backup_reenable")
@@ -1137,7 +1153,6 @@ show_menu() {
                 if (whiptail --title "Server Settings" --yesno "This will modify your server configuration. Continue?" 8 78); then
                     clear
                     setup_server_config
-                    read -p "Press Enter to continue..."
                 fi
                 ;;
             "9")
