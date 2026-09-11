@@ -1490,7 +1490,7 @@ else
             backup_storage_setup
             ;;
         gdrive-sync)
-            manually_sync_gdrive
+            gdrive_sync
             ;;
         backup-schedule)
             backup_schedule
