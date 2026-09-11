@@ -184,6 +184,13 @@ setup_server_config() {
         SERVER_PUBLIC=0
     fi
 
+    # Crossplay Setting (opens the server to PlayStation/Switch/Xbox players via PlayFab)
+    if (whiptail --title "Server Configuration" --yesno "Enable crossplay?\n(Allows PlayStation, Switch, and Xbox players to join in addition to Steam)" 10 78 --defaultno); then
+        SERVER_CROSSPLAY=1
+    else
+        SERVER_CROSSPLAY=0
+    fi
+
     # Backup Settings
     local default_backup=${BACKUP_DIR#./}
     local backup_dir=$(whiptail --title "Backup Configuration" --inputbox "Enter local backup folder name:" 8 78 "$default_backup" 3>&1 1>&2 2>&3)
@@ -207,6 +214,7 @@ setup_server_config() {
         echo "WORLD_NAME=$WORLD_NAME"
         echo "SERVER_PASS=$SERVER_PASS"
         echo "SERVER_PUBLIC=$SERVER_PUBLIC"
+        echo "SERVER_CROSSPLAY=$SERVER_CROSSPLAY"
         echo "BACKUP_DIR=$BACKUP_DIR"
         echo "MAX_BACKUPS=$MAX_BACKUPS"
         echo "BACKUP_INTERVAL_HOURS=$BACKUP_INTERVAL_HOURS"
@@ -461,6 +469,7 @@ start_server() {
         -e WORLD_NAME="$WORLD_NAME" \
         -e SERVER_PASS="$SERVER_PASS" \
         -e SERVER_PUBLIC=$SERVER_PUBLIC \
+        -e SERVER_CROSSPLAY=${SERVER_CROSSPLAY:-0} \
         --restart unless-stopped \
         ${IMAGE_NAME}:latest
 
@@ -578,6 +587,7 @@ show_status() {
         status_msg+="   • Name: $SERVER_NAME\n"
         status_msg+="   • World: $WORLD_NAME\n"
         status_msg+="   • Public: $([ "$SERVER_PUBLIC" == "1" ] && echo "Yes" || echo "No")\n"
+        status_msg+="   • Crossplay: $([ "$SERVER_CROSSPLAY" == "1" ] && echo "Yes" || echo "No")\n"
         status_msg+="   • Uptime: $uptime\n\n"
         
         if [ -n "$stats" ]; then
@@ -937,6 +947,7 @@ show_menu() {
                         -e WORLD_NAME="$WORLD_NAME" \
                         -e SERVER_PASS="$SERVER_PASS" \
                         -e SERVER_PUBLIC=$SERVER_PUBLIC \
+                        -e SERVER_CROSSPLAY=${SERVER_CROSSPLAY:-0} \
                         -e VALHEIM_SAVE_PATH="/valheimdata" \
                         --restart unless-stopped \
                         ${IMAGE_NAME}:latest >/dev/null 2>&1
@@ -1287,7 +1298,12 @@ validate_config() {
         echo "Error: SERVER_PUBLIC must be 0 or 1"
         error=1
     fi
-    
+
+    if [ "${SERVER_CROSSPLAY:-0}" != "0" ] && [ "${SERVER_CROSSPLAY:-0}" != "1" ]; then
+        echo "Error: SERVER_CROSSPLAY must be 0 or 1"
+        error=1
+    fi
+
     if [ $error -eq 1 ]; then
         exit 1
     fi

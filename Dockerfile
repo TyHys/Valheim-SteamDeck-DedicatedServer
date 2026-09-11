@@ -40,6 +40,9 @@ RUN mkdir -p ${VALHEIM_DIR} && \
 # Copy server files from builder stage
 COPY --from=steamcmd ${VALHEIM_DIR} ${VALHEIM_DIR}
 
+# Copy entrypoint script
+COPY entrypoint.sh /home/steam/entrypoint.sh
+
 # Switch to steam user
 USER steam
 WORKDIR ${VALHEIM_DIR}
@@ -52,4 +55,5 @@ EXPOSE 2456-2458/udp
 
 # Set the entrypoint
 # SERVER_NAME, WORLD_NAME, SERVER_PASS, and SERVER_PUBLIC must be provided via environment variables
-ENTRYPOINT ["sh", "-c", "./valheim_server.x86_64 -name \"${SERVER_NAME}\" -world \"${WORLD_NAME}\" -password \"${SERVER_PASS}\" -public \"${SERVER_PUBLIC}\" -savedir \"${VALHEIM_SAVE_PATH}\""]
+# SERVER_CROSSPLAY (optional) enables the -crossplay flag when set to "1"
+ENTRYPOINT ["sh", "/home/steam/entrypoint.sh"]

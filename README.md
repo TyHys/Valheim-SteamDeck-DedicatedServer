@@ -211,11 +211,22 @@ For example:
 .
 ├── README.md           # This documentation
 ├── Dockerfile          # Docker image configuration
+├── entrypoint.sh        # Container entrypoint (launches the server, handles crossplay flag)
 ├── server.sh           # Main server management script
-├── valheim-data/       # Server world data (persistent)
-├── valheim-backups/    # Backup storage
+├── valheim-devdata/    # Server world data (persistent)
+├── valheim-devbackups/ # Backup storage
 └── .valheim.env        # Server configuration (auto-generated)
 ```
+
+---
+
+## Valheim 1.0 Notes
+
+- **World save format:** As of the 1.0 release (September 9, 2026), worlds are no longer a single `.db`/`.fwl` file pair. Each world is now a **folder** (named after the world, case-sensitive) inside `worlds_local/`, containing `_main.N.db2`, `_main.N.fwl2`, a `.chunks` index, and individual terrain `.chunk` files. `WORLD_NAME` must match the folder name exactly.
+  - Older `.db`/`.fwl` worlds are converted automatically on first load (a backup of the originals is made first). This can take several minutes with no console output — don't stop the server mid-conversion.
+  - Backups and restores always operate on the entire world folder; the scripts here already back up the whole data directory, so no changes were needed there.
+- **Crossplay:** Set `SERVER_CROSSPLAY=1` in `.valheim.env` (or answer "yes" during `./server.sh setup`) to open the server to PlayStation, Switch, and Xbox players via PlayFab matchmaking, in addition to Steam. It is off by default.
+- **Steam app ID and ports are unchanged** (`896660`, UDP `2456-2458`), so rebuilding the Docker image (`docker build`) is sufficient to pull the latest 1.0 patch of the dedicated server via `steamcmd`.
 
 ---
 
