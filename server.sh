@@ -1392,14 +1392,19 @@ gdrive_sync() {
         show_message "Error" "rclone is not installed. Please install rclone to use Google Drive sync." 10 78
         return 1
     fi
-    local sync_cmd="rclone sync --progress --transfers=4 --checkers=8 --drive-chunk-size=64M '$BACKUP_DIR' '$RCLONE_REMOTE:$RCLONE_PATH'"
+    # Use an argument array, never a quoted command string -- string-building +
+    # eval/bare-expansion inconsistency previously caused the literal quote
+    # characters to be passed to rclone as part of the path/remote, pointing it
+    # at a folder that doesn't exist ('./valheim-backups' with quotes included)
+    # and silently failing the whole sync.
+    local sync_args=(sync --progress --transfers=4 --checkers=8 --drive-chunk-size=64M "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH")
     # Only use the whiptail gauge when a real controlling terminal is available.
     # whiptail draws to /dev/tty directly; if that's not usable (no controlling
     # terminal, some terminal wrappers, etc.) it exits immediately, which SIGPIPEs
     # the sync command feeding its gauge before any data transfers -- silently.
     if command -v whiptail >/dev/null 2>&1 && [ -t 1 ] && ( : < /dev/tty ) 2>/dev/null; then
         (
-            $sync_cmd 2>&1 | stdbuf -oL grep -Eo 'Transferred:.*|Checks:.*|Elapsed time:.*|Errors:.*' | while read -r line; do
+            rclone "${sync_args[@]}" 2>&1 | stdbuf -oL grep -Eo 'Transferred:.*|Checks:.*|Elapsed time:.*|Errors:.*' | while read -r line; do
                 echo "XXX"
                 echo "$line"
                 echo "XXX"
@@ -1415,7 +1420,7 @@ gdrive_sync() {
         fi
     else
         echo "Syncing backups to Google Drive..."
-        eval $sync_cmd
+        rclone "${sync_args[@]}"
         local status=$?
         if [ $status -eq 0 ]; then
             echo "Google Drive sync completed successfully!"
