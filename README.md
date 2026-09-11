@@ -13,7 +13,7 @@ This project provides scripts and configuration for running a lightweight vanill
 - [Initial Setup](#initial-setup)
 - [Usage](#usage)
   - [Menu-Driven (Recommended)](#menu-driven-recommended)
-  - [Command-Line](#command-line)
+  - [Command-Line (Alternative)](#command-line-alternative)
 - [Backup Management](#backup-management)
 - [Google Drive Integration](#google-drive-integration)
 - [Permissions & Sudo](#permissions--sudo)
@@ -74,13 +74,17 @@ This project provides scripts and configuration for running a lightweight vanill
 
 ### Menu-Driven (Recommended)
 
-Run:
+The easiest way to manage your server is through the interactive menu. Simply run:
 ```bash
 ./server.sh
 ```
-This launches an interactive menu for all server management tasks.
 
-**Menu options include:**
+<p align="center">
+  <img src="https://i.imgur.com/lmC97We.png" alt="Valheim Server Banner">
+</p>
+
+
+This launches an interactive menu for all server management tasks, including:
 - Start Server
 - Stop Server
 - Show Server Status
@@ -99,12 +103,13 @@ This launches an interactive menu for all server management tasks.
 - Clear All Logs
 - Exit
 
-### Command-Line
+### Command-Line (Alternative)
 
-You can also run specific commands directly:
+If you prefer using command-line arguments, you can run specific commands directly:
 ```bash
 ./server.sh {start|stop|status|restart|logs|lastlog|backup|restore|players|access|cleanup|data|setup|gdrive-sync-setup|gdrive-sync|backup-schedule|backup-reenable|?}
 ```
+
 For example:
 ```bash
 ./server.sh start
@@ -132,18 +137,22 @@ For example:
 - `backup-reenable`   - Start the backup scheduler if it is not running
 - `?`                 - Show help message
 
+> **Note:** While command-line options are available, using the interactive menu (`./server.sh`) is recommended for most users as it provides a more user-friendly interface and helps prevent errors.
+
 ---
 
 ## Backup Management
 
-- **Automatic backups:** Created every hour while the server is running and before shutdown.
+- **Automatic backups:** Created every N hour(s) (configurable during setup) while the server is running and before shutdown.
 - **Manual backup:**
   ```bash
   ./server.sh backup
+  Or use the 'Backup Management' from the main menu
   ```
 - **Restore from backup:**
   ```bash
   ./server.sh restore
+  Or use the 'Backup Management' from the main menu
   ```
 - **Backup retention:** Keeps the last N backups (configurable during setup).
 - **Backup location:** `./valheim-backups` by default.
@@ -213,8 +222,8 @@ For example:
 ├── Dockerfile          # Docker image configuration
 ├── entrypoint.sh        # Container entrypoint (launches the server, handles crossplay flag)
 ├── server.sh           # Main server management script
-├── valheim-devdata/    # Server world data (persistent)
-├── valheim-devbackups/ # Backup storage
+├── valheim-data/       # Server world data (persistent)
+├── valheim-backups/    # Backup storage
 └── .valheim.env        # Server configuration (auto-generated)
 ```
 
