@@ -426,6 +426,14 @@ check_backup_scheduler() {
     fi
 }
 
+# Function to create data directories with correct ownership/permissions
+# for the containerized steam user (uid 1000)
+setup_data_directories() {
+    mkdir -p "${VALHEIM_DATA}/worlds_local" "${VALHEIM_DATA}/worlds" "${VALHEIM_DATA}/characters" "${VALHEIM_DATA}/saves"
+    sudo_handler "chown -R 1000:1000 '${VALHEIM_DATA}'" >/dev/null 2>&1
+    chmod -R u+rwx,g+rwx,o+rx "${VALHEIM_DATA}" >/dev/null 2>&1
+}
+
 # Function to start server
 start_server() {
     if is_running; then
