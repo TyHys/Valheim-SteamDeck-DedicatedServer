@@ -16,8 +16,15 @@ USER steam
 WORKDIR /home/steam
 
 # Install Valheim Dedicated Server
+# steamcmd's anonymous login intermittently fails PICS/license checks with a generic
+# "Missing configuration" error (observed around the Valheim 1.0 launch); retry with
+# backoff since these failures are transient on Steam's side, not local.
 RUN mkdir -p ~/.steam && \
-    /home/steam/steamcmd/steamcmd.sh +force_install_dir ${VALHEIM_DIR} +login anonymous +app_update ${STEAM_APPID} validate +quit
+    for i in 1 2 3 4 5; do \
+        /home/steam/steamcmd/steamcmd.sh +force_install_dir ${VALHEIM_DIR} +login anonymous +app_update ${STEAM_APPID} validate +quit && touch /tmp/steamcmd_ok && break; \
+        echo "steamcmd attempt $i failed, retrying in 15s..."; \
+        sleep 15; \
+    done && test -f /tmp/steamcmd_ok
 
 # Start fresh for the final image
 FROM cm2network/steamcmd:root
