@@ -1272,19 +1272,19 @@ show_menu() {
                     
                     case $BACKUP_CHOICE in
                         "1")
-                            create_backup_robust
+                            create_backup
                             ;;
                         "2")
                             restore_server
                             ;;
                         "3")
-                            show_backup_schedule
+                            backup_schedule
                             ;;
                         "4")
                             backup_storage_setup
                             ;;
                         "5")
-                            backup_reenable_robust
+                            backup_reenable
                             ;;
                         "6")
                             manually_sync_gdrive
@@ -1382,76 +1382,6 @@ validate_config() {
     fi
 }
 
-# Call validation before any operation
-validate_config
-
-# Main script
-if [ $# -eq 0 ]; then
-    # No arguments provided, show interactive menu
-    show_menu
-else
-    # Arguments provided, handle traditional command-line usage
-    case "$1" in
-        start)
-            start_server
-            ;;
-        stop)
-            stop_server
-            ;;
-        status)
-            show_status
-            ;;
-        restart)
-            restart_server
-            ;;
-        logs)
-            show_logs
-            ;;
-        lastlog)
-            show_lastlog
-            ;;
-        backup)
-            create_backup_robust
-            ;;
-        restore)
-            restore_server
-            ;;
-        players)
-            list_players
-            ;;
-        access)
-            show_access_info
-            ;;
-        cleanup)
-            cleanup_cache
-            ;;
-        setup)
-            run_full_server_setup
-            ;;
-        data)
-            check_data_persistence_robust
-            ;;
-        gdrive-sync-setup)
-            backup_storage_setup
-            ;;
-        gdrive-sync)
-            manually_sync_gdrive
-            ;;
-        backup-schedule)
-            show_backup_schedule
-            ;;
-        backup-reenable)
-            backup_reenable_robust
-            ;;
-        "?")
-            show_usage
-            ;;
-        *)
-            show_usage
-            ;;
-    esac 
-fi
-
 # Robust Google Drive sync (backgrounded, user-friendly)
 gdrive_sync() {
     if [ -z "$RCLONE_REMOTE" ] || [ -z "$RCLONE_PATH" ]; then
@@ -1503,11 +1433,76 @@ manually_sync_gdrive() {
     fi
 }
 
-# Add --help flag to CLI
-if [[ "$1" == "--help" ]]; then
-    show_usage
-fi
-
 run_server_setup() {
     run_full_server_setup
 }
+
+# Call validation before any operation
+validate_config
+
+# Main script
+if [ $# -eq 0 ]; then
+    # No arguments provided, show interactive menu
+    show_menu
+else
+    # Arguments provided, handle traditional command-line usage
+    case "$1" in
+        start)
+            start_server
+            ;;
+        stop)
+            stop_server
+            ;;
+        status)
+            show_status
+            ;;
+        restart)
+            restart_server
+            ;;
+        logs)
+            show_logs
+            ;;
+        lastlog)
+            show_lastlog
+            ;;
+        backup)
+            create_backup
+            ;;
+        restore)
+            restore_server
+            ;;
+        players)
+            list_players
+            ;;
+        access)
+            access_server
+            ;;
+        cleanup)
+            cleanup_cache
+            ;;
+        setup)
+            run_full_server_setup
+            ;;
+        data)
+            check_data_persistence
+            ;;
+        gdrive-sync-setup)
+            backup_storage_setup
+            ;;
+        gdrive-sync)
+            manually_sync_gdrive
+            ;;
+        backup-schedule)
+            backup_schedule
+            ;;
+        backup-reenable)
+            backup_reenable
+            ;;
+        "?")
+            show_usage
+            ;;
+        *)
+            show_usage
+            ;;
+    esac
+fi
