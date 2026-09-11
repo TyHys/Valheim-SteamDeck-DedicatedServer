@@ -1393,7 +1393,11 @@ gdrive_sync() {
         return 1
     fi
     local sync_cmd="rclone sync --progress --transfers=4 --checkers=8 --drive-chunk-size=64M '$BACKUP_DIR' '$RCLONE_REMOTE:$RCLONE_PATH'"
-    if command -v whiptail >/dev/null 2>&1; then
+    # Only use the whiptail gauge when a real controlling terminal is available.
+    # whiptail draws to /dev/tty directly; if that's not usable (no controlling
+    # terminal, some terminal wrappers, etc.) it exits immediately, which SIGPIPEs
+    # the sync command feeding its gauge before any data transfers -- silently.
+    if command -v whiptail >/dev/null 2>&1 && [ -t 1 ] && ( : < /dev/tty ) 2>/dev/null; then
         (
             $sync_cmd 2>&1 | stdbuf -oL grep -Eo 'Transferred:.*|Checks:.*|Elapsed time:.*|Errors:.*' | while read -r line; do
                 echo "XXX"
