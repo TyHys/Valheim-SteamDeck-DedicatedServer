@@ -156,6 +156,12 @@ For example:
   ```
 - **Backup retention:** Keeps the last N backups (configurable during setup).
 - **Backup location:** `./valheim-backups` by default.
+- **Scheduling:** automatic backups run via a `systemd --user` timer (`valheim-backup.timer`), installed/updated automatically whenever the server starts or `./server.sh backup-reenable` is run. This (rather than a plain background process) is what lets the schedule keep running reliably across Deck suspend/resume and desktop session changes. Check its state directly with:
+  ```bash
+  systemctl --user list-timers valheim-backup.timer   # shows ON/OFF + next run time
+  journalctl --user -u valheim-backup.service -n 50   # recent run history/output
+  ```
+  `./server.sh backup-schedule` shows the same status in a friendlier format.
 
 ---
 
