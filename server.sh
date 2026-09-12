@@ -102,13 +102,6 @@ cleanup_temp_files() {
             kill "$pid" 2>/dev/null
         fi
     done
-    # Remove backup scheduler PID file if not running
-    if [ -f /tmp/valheim_backup_pid ]; then
-        backup_pid=$(cat /tmp/valheim_backup_pid)
-        if ! kill -0 $backup_pid 2>/dev/null; then
-            rm -f /tmp/valheim_backup_pid
-        fi
-    fi
 }
 
 trap cleanup_temp_files EXIT INT TERM
@@ -565,38 +558,90 @@ restore_server() {
     fi
 }
 
+# The backup scheduler used to be a plain `while true; sleep; done &` background
+# loop tracked via a PID file. That loop had no relationship to any process
+# supervisor: it was only ever a child of whatever shell happened to start it,
+# so it was silently reaped whenever that shell's session ended for any reason
+# (closing the terminal, the Deck suspending, a desktop session restart, etc.)
+# -- with nothing to report the loss, since there was nothing left alive to
+# report it. Docker itself never had this problem because it's a real systemd
+# service, supervised independently of any login session. The fix is to give
+# the backup schedule the same property: manage it as an actual systemd --user
+# timer instead of an ad-hoc background loop. Timers survive session churn,
+# catch up on missed runs after downtime (Persistent=true), and are inspectable
+# with systemctl/journalctl instead of a PID file that can silently go stale.
+
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+BACKUP_TIMER_UNIT="valheim-backup.timer"
+BACKUP_SERVICE_UNIT="valheim-backup.service"
+
+# Install (or update) the systemd --user timer/service pair for scheduled
+# backups, matching the current BACKUP_INTERVAL_HOURS, and enable+start it.
+# Also ensures the user's systemd instance keeps running (and thus the timer
+# keeps firing) even without an active login/desktop session.
+install_backup_timer() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "systemctl not found -- cannot install the backup timer on this system."
+        return 1
+    fi
+
+    local script_path
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    local work_dir
+    work_dir="$(dirname "$script_path")"
+    local interval_hours="${BACKUP_INTERVAL_HOURS:-1}"
+
+    mkdir -p "$SYSTEMD_USER_DIR"
+
+    cat > "$SYSTEMD_USER_DIR/$BACKUP_SERVICE_UNIT" <<EOF
+[Unit]
+Description=Valheim server backup and Google Drive sync
+
+[Service]
+Type=oneshot
+WorkingDirectory=$work_dir
+ExecStart=$script_path backup
+EOF
+
+    cat > "$SYSTEMD_USER_DIR/$BACKUP_TIMER_UNIT" <<EOF
+[Unit]
+Description=Run the Valheim backup on a schedule
+
+[Timer]
+OnActiveSec=${interval_hours}h
+OnUnitActiveSec=${interval_hours}h
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    # Let the user's systemd instance (and this timer) keep running even when
+    # no one is logged into a desktop session -- otherwise the timer would be
+    # exposed to the exact same "dies when the session ends" problem this is
+    # meant to fix.
+    loginctl enable-linger "$(whoami)" >/dev/null 2>&1
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$BACKUP_TIMER_UNIT" >/dev/null 2>&1
+    systemctl --user restart "$BACKUP_TIMER_UNIT"
+}
+
+# Stop and disable the backup timer (used when the server itself is stopped).
+remove_backup_timer() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl --user disable --now "$BACKUP_TIMER_UNIT" >/dev/null 2>&1
+}
+
 # Function to manage the backup scheduler
 check_backup_scheduler() {
-    # Kill any existing backup loop before starting a new one
-    if [ -f /tmp/valheim_backup_pid ]; then
-        backup_pid=$(cat /tmp/valheim_backup_pid)
-        if kill -0 $backup_pid 2>/dev/null; then
-            echo "Killing existing backup loop (PID $backup_pid)..."
-            kill $backup_pid
-        fi
-        rm -f /tmp/valheim_backup_pid
-    fi
-    
     if is_running; then
-        local interval_sec=$(( ${BACKUP_INTERVAL_HOURS:-1} * 3600 ))
-        echo "Starting hourly backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
-        # Fully detach from the terminal: as long as this loop shares a tty with an
-        # interactive shell, gdrive_sync's "is this interactive?" check can pass even
-        # with nobody there to interact with a whiptail dialog, silently breaking the
-        # scheduled Google Drive sync every time. Redirecting stdin/stdout/stderr away
-        # from the terminal makes it unambiguously non-interactive, always.
-        (
-            while true; do
-                sleep $interval_sec
-                if is_running; then
-                    echo "[$(date)] Running scheduled backup..."
-                    create_backup
-                fi
-            done
-        ) < /dev/null >> /tmp/valheim_backup_scheduler.log 2>&1 &
-        echo $! > /tmp/valheim_backup_pid
+        echo "Starting backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
+        install_backup_timer
     else
         echo "No running server, backup scheduler not started."
+        remove_backup_timer
     fi
 }
 
@@ -1052,19 +1097,18 @@ check_data_persistence() {
 
 # Function to describe the backup schedule in human language
 backup_schedule() {
-    # Check if the backup scheduler is running
+    # Check if the backup timer is actually enabled and active in systemd
     local scheduler_status="OFF"
-    if [ -f /tmp/valheim_backup_pid ]; then
-        backup_pid=$(cat /tmp/valheim_backup_pid)
-        if kill -0 $backup_pid 2>/dev/null; then
-            scheduler_status="ON"
-        fi
+    local next_run=""
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active "$BACKUP_TIMER_UNIT" >/dev/null 2>&1; then
+        scheduler_status="ON"
+        next_run=$(systemctl --user list-timers "$BACKUP_TIMER_UNIT" --no-legend 2>/dev/null | awk '{print $1, $2, $3}')
     fi
-    
+
     cat << EOF
 🗂️  Valheim Server Backup Schedule
 ────────────────────────────────────
-🔵 Backup Scheduler: $scheduler_status
+🔵 Backup Scheduler: $scheduler_status$([ -n "$next_run" ] && echo " (next run: $next_run)")
 
 ⏰ Frequency:
    • Every ${BACKUP_INTERVAL_HOURS:-1} hour(s) while server is running
@@ -1088,30 +1132,18 @@ EOF
 
 # Function to re-enable the backup scheduler if not running
 backup_reenable() {
-    if [ -f /tmp/valheim_backup_pid ]; then
-        backup_pid=$(cat /tmp/valheim_backup_pid)
-        if kill -0 $backup_pid 2>/dev/null; then
-            echo "🟢 Backup scheduler is already running (PID $backup_pid)."
-            return 0
-        else
-            rm -f /tmp/valheim_backup_pid
-        fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active "$BACKUP_TIMER_UNIT" >/dev/null 2>&1; then
+        echo "🟢 Backup scheduler is already running."
+        return 0
     fi
     if is_running; then
-        local interval_sec=$(( ${BACKUP_INTERVAL_HOURS:-1} * 3600 ))
         echo "Starting backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
-        # See check_backup_scheduler for why this must be fully detached from the tty.
-        (
-            while true; do
-                sleep $interval_sec
-                if is_running; then
-                    echo "[$(date)] Running scheduled backup..."
-                    create_backup
-                fi
-            done
-        ) < /dev/null >> /tmp/valheim_backup_scheduler.log 2>&1 &
-        echo $! > /tmp/valheim_backup_pid
-        echo "🟢 Backup scheduler started (PID $(cat /tmp/valheim_backup_pid))."
+        if install_backup_timer; then
+            echo "🟢 Backup scheduler started (systemd timer: $BACKUP_TIMER_UNIT)."
+        else
+            echo "🔴 Failed to start the backup scheduler. See errors above."
+            return 1
+        fi
     else
         echo "🔴 Server is not running. Start the server first to enable the backup scheduler."
     fi
