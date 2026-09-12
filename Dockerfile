@@ -1,5 +1,5 @@
 # Base image for building
-FROM cm2network/steamcmd:root as steamcmd
+FROM cm2network/steamcmd:root AS steamcmd
 
 # Set environment variables
 ENV STEAM_APPID=896660
@@ -16,8 +16,15 @@ USER steam
 WORKDIR /home/steam
 
 # Install Valheim Dedicated Server
+# steamcmd's anonymous login intermittently fails PICS/license checks with a generic
+# "Missing configuration" error (observed around the Valheim 1.0 launch); retry with
+# backoff since these failures are transient on Steam's side, not local.
 RUN mkdir -p ~/.steam && \
-    /home/steam/steamcmd/steamcmd.sh +force_install_dir ${VALHEIM_DIR} +login anonymous +app_update ${STEAM_APPID} validate +quit
+    for i in 1 2 3 4 5; do \
+        /home/steam/steamcmd/steamcmd.sh +force_install_dir ${VALHEIM_DIR} +login anonymous +app_update ${STEAM_APPID} validate +quit && touch /tmp/steamcmd_ok && break; \
+        echo "steamcmd attempt $i failed, retrying in 15s..."; \
+        sleep 15; \
+    done && test -f /tmp/steamcmd_ok
 
 # Start fresh for the final image
 FROM cm2network/steamcmd:root
@@ -40,6 +47,9 @@ RUN mkdir -p ${VALHEIM_DIR} && \
 # Copy server files from builder stage
 COPY --from=steamcmd ${VALHEIM_DIR} ${VALHEIM_DIR}
 
+# Copy entrypoint script
+COPY entrypoint.sh /home/steam/entrypoint.sh
+
 # Switch to steam user
 USER steam
 WORKDIR ${VALHEIM_DIR}
@@ -52,4 +62,5 @@ EXPOSE 2456-2458/udp
 
 # Set the entrypoint
 # SERVER_NAME, WORLD_NAME, SERVER_PASS, and SERVER_PUBLIC must be provided via environment variables
-ENTRYPOINT ./valheim_server.x86_64 -name "${SERVER_NAME}" -world "${WORLD_NAME}" -password "${SERVER_PASS}" -public "${SERVER_PUBLIC}" -savedir "${VALHEIM_SAVE_PATH}"
+# SERVER_CROSSPLAY (optional) enables the -crossplay flag when set to "1"
+ENTRYPOINT ["sh", "/home/steam/entrypoint.sh"]

@@ -1,13 +1,71 @@
 #!/bin/bash
 
+# Logging helper: append to shell.log in the main working directory
+log_message() {
+    local msg="[$(date +'%Y-%m-%d %H:%M:%S')] $1"
+    echo "$msg" >> "$(dirname "$0")/shell.log"
+}
+
+# DEBUG: Script started at $(date)
+log_message "Script started at $(date)"
+
+validate_server_name() {
+    local raw="$1"
+    local name="$(echo "$raw" | xargs)"
+    local len="${#name}"
+    local result=0
+    if [[ -z "$name" || "$len" -lt 3 ]]; then result=1; fi
+    log_message "server_name raw='$raw' trimmed='$name' len=$len result=$result"
+    return $result
+}
+validate_world_name() {
+    local raw="$1"
+    local name="$(echo "$raw" | xargs)"
+    local len="${#name}"
+    local result=0
+    if [[ -z "$name" || "$len" -lt 3 ]]; then result=1; fi
+    log_message "world_name raw='$raw' trimmed='$name' len=$len result=$result"
+    return $result
+}
+validate_password() {
+    local raw="$1"
+    local pass="$(echo "$raw" | xargs)"
+    local len="${#pass}"
+    local result=0
+    if [[ -z "$pass" || "$len" -lt 5 ]]; then result=1; fi
+    log_message "password raw='***' trimmed='***' len=$len result=$result"
+    return $result
+}
+validate_number() {
+    local num="$1"
+    [[ "$num" =~ ^[0-9]+$ ]] && return 0 || return 1
+}
+
+# Check for whiptail
+if ! command -v whiptail >/dev/null 2>&1; then
+    echo "whiptail is not installed. Installing..."
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update && sudo apt-get install -y whiptail
+    elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y newt
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --noconfirm libnewt
+    else
+        echo "Could not install whiptail. Please install it manually."
+        echo "Falling back to command-line interface."
+        show_usage
+        exit 1
+    fi
+fi
+
 # =====================
 # Server Configuration
 # =====================
-# Required settings - modify these for your server
-SERVER_NAME="YOUR_SERVER_NAME"          # The name that appears in the server browser
-WORLD_NAME="YOUR_WORLD_NAME"             # The name of your world
-SERVER_PASS="YOUR_PASSWORD"            # Must be at least 5 characters
-SERVER_PUBLIC=1                # 1 for public, 0 for private
+# Server configuration is stored in .valheim.env
+# To configure your server, either:
+# 1. Run ./server.sh and select "Server Settings" from the menu
+# 2. Run ./server.sh setup
+# Do NOT edit these values directly in this file!
 
 # Advanced settings - change only if you know what you're doing
 CONTAINER_NAME="valheim-server"
@@ -17,62 +75,323 @@ BACKUP_DIR="./valheim-backups"
 MAX_BACKUPS=24                 # Keep last 24 backups
 CACHE_VOLUME="valheim-cache"   # Docker volume for caching
 
-# Google Drive/rclone backup config
-RCLONE_REMOTE=""
-RCLONE_PATH=""
+# Google Drive backup configuration is stored in .valheim.env
+# To configure Google Drive backup:
+# 1. Run ./server.sh and select "Backup Management" -> "Configure Google Drive Sync"
+# 2. Run ./server.sh gdrive-sync-setup
 
 # Load config from .valheim.env if it exists
 if [ -f .valheim.env ]; then
     source .valheim.env
 fi
 
-# Ensure data directories exist with correct permissions
-setup_data_directories() {
-    echo "Setting up data directories..."
-    # Create the directory structure for the -savedir path
-    mkdir -p "${VALHEIM_DATA}/worlds_local"
-    mkdir -p "${VALHEIM_DATA}/worlds"
-    mkdir -p "${VALHEIM_DATA}/characters"
-    mkdir -p "${VALHEIM_DATA}/saves"
-    # Attempt to set ownership to UID 1000, GID 1000 (common for default user / steam user)
-    # This might require sudo if the script runner doesn't own the files or isn't root
-    sudo chown -R 1000:1000 "${VALHEIM_DATA}" || echo "Warning: Failed to chown ${VALHEIM_DATA}. Manual permission adjustment may be needed."
-    chmod -R u+rwx,g+rwx,o+rx "${VALHEIM_DATA}"
+# All function definitions above this line
+
+# Track temp files and background jobs for cleanup
+TEMP_FILES=()
+TEMP_PIDS=()
+
+cleanup_temp_files() {
+    # Remove temp files
+    for f in "${TEMP_FILES[@]}"; do
+        [ -f "$f" ] && rm -f "$f"
+    done
+    # Kill background jobs
+    for pid in "${TEMP_PIDS[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+    done
 }
 
-# Validate configuration
-validate_config() {
-    local error=0
-    
-    if [ -z "$SERVER_NAME" ]; then
-        echo "Error: SERVER_NAME cannot be empty"
-        error=1
+trap cleanup_temp_files EXIT INT TERM
+
+# Helper: Unified sudo password prompt and validation
+require_sudo() {
+    # Usage: require_sudo [prompt message]
+    if sudo -n true 2>/dev/null; then
+        return 0
     fi
-    
-    if [ -z "$WORLD_NAME" ]; then
-        echo "Error: WORLD_NAME cannot be empty"
-        error=1
+    local prompt_msg="${1:-This operation requires sudo privileges. Please enter your password:}"
+    if command -v whiptail >/dev/null 2>&1; then
+        local password
+        password=$(whiptail --title "Sudo Required" --passwordbox "\n$prompt_msg" 12 78 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && return 1
+        echo "$password" | sudo -S true 2>/dev/null || return 1
+        unset password
+    else
+        echo "$prompt_msg"
+        read -s password
+        echo "$password" | sudo -S true 2>/dev/null || return 1
+        unset password
     fi
-    
-    if [ ${#SERVER_PASS} -lt 5 ]; then
-        echo "Error: SERVER_PASS must be at least 5 characters long"
-        error=1
-    fi
-    
-    if [ "$SERVER_PUBLIC" != "0" ] && [ "$SERVER_PUBLIC" != "1" ]; then
-        echo "Error: SERVER_PUBLIC must be 0 or 1"
-        error=1
-    fi
-    
-    if [ $error -eq 1 ]; then
-        exit 1
+    return 0
+}
+
+# Helper: Unified message display (whiptail or echo)
+show_message() {
+    # Usage: show_message "Title" "Message" [height width]
+    local title="$1"
+    local msg="$2"
+    local height="${3:-10}"
+    local width="${4:-78}"
+    if command -v whiptail >/dev/null 2>&1; then
+        whiptail --title "$title" --msgbox "$msg" "$height" "$width"
+    else
+        echo -e "[$title]\n$msg"
     fi
 }
 
-# Call validation before any operation
-validate_config
+# Helper: Unified yes/no prompt (returns 0 for yes, 1 for no)
+show_confirm() {
+    # Usage: show_confirm "Title" "Prompt" [height width]
+    local title="$1"
+    local prompt="$2"
+    local height="${3:-10}"
+    local width="${4:-78}"
+    if command -v whiptail >/dev/null 2>&1; then
+        whiptail --title "$title" --yesno "$prompt" "$height" "$width"
+        return $?
+    else
+        echo -e "[$title]\n$prompt (y/n): "
+        read yn
+        [[ "$yn" =~ ^[Yy]$ ]] && return 0 || return 1
+    fi
+}
 
-# DNS_NAME="valheim.imdy.in"  # Your DNS name
+# Function to handle sudo with password prompt
+sudo_handler() {
+    local command="$1"
+    local password
+    
+    # Check if we already have sudo privileges
+    if sudo -n true 2>/dev/null; then
+        eval "sudo $command"
+        return $?
+    fi
+    
+    # Ask for password
+    password=$(whiptail --title "Sudo Required" --passwordbox "\nThis operation requires sudo privileges.\nPlease enter your password:" 12 78 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    # Execute command with password
+    echo "$password" | sudo -S eval "$command" 2>/dev/null
+    local result=$?
+    
+    # Clear password from memory
+    password=""
+    unset password
+    
+    return $result
+}
+
+# Function to set up rclone/Google Drive backup
+backup_storage_setup() {
+    if ! command -v rclone &>/dev/null; then
+        if (whiptail --title "rclone Installation" --yesno "rclone is not installed. Would you like to install it now?" 8 78); then
+            if command -v pacman &>/dev/null; then
+                {
+                    echo "10"; echo "XXX"; echo "Installing rclone..."; echo "XXX"
+                    sudo_handler "pacman -S --noconfirm rclone"
+                    echo "100"; echo "XXX"; echo "Installation complete!"; echo "XXX"
+                } | whiptail --title "Installing rclone" --gauge "Please wait..." 8 78 0
+            else
+                whiptail --title "Error" --msgbox "Automatic install not supported on this system.\nPlease install rclone manually (see https://rclone.org/install/)." 10 78
+                return 1
+            fi
+        else
+            return 1
+        fi
+    fi
+
+    # Get remote name
+    local default_remote=${RCLONE_REMOTE:-VALHEIM-SDDS}
+    local remote=$(whiptail --title "rclone Configuration" --inputbox "Enter the rclone remote name to use for Google Drive:" 8 78 "$default_remote" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+
+    # Check if remote exists and offer to reconfigure
+    if rclone listremotes | grep -q "^$remote:"; then
+        if (whiptail --title "Existing Remote" --yesno "Remote '$remote' already exists. Would you like to reconfigure it?" 8 78); then
+            {
+                echo "25"; echo "XXX"; echo "Deleting existing remote..."; echo "XXX"
+                rclone config delete "$remote" --non-interactive
+                echo "100"; echo "XXX"; echo "Remote deleted!"; echo "XXX"
+            } | whiptail --title "Configuring rclone" --gauge "Please wait..." 8 78 0
+        else
+            # If not reconfiguring, just get the backup path
+            local default_path=${RCLONE_PATH:-valheim-backups}
+            local path=$(whiptail --title "Backup Location" --inputbox "Enter the folder path in your Google Drive for backups:" 8 78 "$default_path" 3>&1 1>&2 2>&3)
+            if [ $? -ne 0 ]; then return 1; fi
+            RCLONE_REMOTE="$remote"
+            RCLONE_PATH="$path"
+            return 0
+        fi
+    fi
+
+    # Automate rclone config create (type=drive, scope=drive.file)
+    {
+        echo "0"; echo "XXX"; echo "Creating rclone remote..."; echo "XXX"
+        rclone config create "$remote" drive scope=drive.file --non-interactive
+        echo "100"; echo "XXX"; echo "Remote created!"; echo "XXX"
+    } | whiptail --title "Configuring rclone" --gauge "Please wait..." 8 78 0
+
+    # Prompt user to do OAuth via rclone config reconnect
+    whiptail --title "Google Drive Authentication" --msgbox "The next step will open a prompt in your terminal.\n\nYou will see a URL to copy and open in your browser.\n\nAfter authenticating, paste the code back into the terminal.\n\nPress OK to continue." 14 78
+    rclone config reconnect "$remote:"
+
+    # After rclone config, continue in whiptail
+    local default_path=${RCLONE_PATH:-valheim-backups}
+    local path=$(whiptail --title "Backup Location" --inputbox "Enter the folder path in your Google Drive for backups:" 8 78 "$default_path" 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ]; then return 1; fi
+
+    # Save configuration
+    RCLONE_REMOTE="$remote"
+    RCLONE_PATH="$path"
+
+    # Update .valheim.env
+    {
+        grep -v '^RCLONE_REMOTE=' .valheim.env 2>/dev/null | grep -v '^RCLONE_PATH=' > .valheim.env.tmp || true
+        mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+        echo "RCLONE_REMOTE=$RCLONE_REMOTE" >> .valheim.env
+        echo "RCLONE_PATH=$RCLONE_PATH" >> .valheim.env
+    }
+
+    whiptail --title "Success" --msgbox "Google Drive backup configuration saved!\n\nRemote: $RCLONE_REMOTE\nPath: $RCLONE_PATH" 10 78
+
+    # Re-source .valheim.env
+    if [ -f .valheim.env ]; then
+        source .valheim.env
+    fi
+}
+
+# Function to set up server configuration
+setup_server_config() {
+    log_message "Entered setup_server_config at $(date)"
+    echo "[DEBUG] Entered setup_server_config (should see this in terminal)" >&2
+    # Server Name
+    while true; do
+        local default_server_name="${SERVER_NAME:- }"
+        log_message "Prompting for server name, default='$default_server_name'"
+        local server_name=$(whiptail --title "Server Configuration" --inputbox "Enter Server Name (min 3 chars):" 8 78 "$default_server_name" 3>&1 1>&2 2>&3)
+        local exit_status=$?
+        log_message "Server name prompt exit status: $exit_status, value='$server_name'"
+        if [ $exit_status -ne 0 ]; then log_message "User cancelled at server name"; return 1; fi
+        validate_server_name "$server_name"; vresult=$?
+        log_message "Called validate_server_name with '$server_name', result=$vresult"
+        if [ $vresult -eq 0 ]; then
+            SERVER_NAME="$server_name"
+            break
+        else
+            show_message "Error" "Server name must be at least 3 characters long." 8 78
+        fi
+    done
+    # World Name
+    while true; do
+        local default_world_name="${WORLD_NAME:- }"
+        log_message "Prompting for world name, default='$default_world_name'"
+        local world_name=$(whiptail --title "Server Configuration" --inputbox "Enter World Name (min 3 chars):" 8 78 "$default_world_name" 3>&1 1>&2 2>&3)
+        local exit_status=$?
+        log_message "World name prompt exit status: $exit_status, value='$world_name'"
+        if [ $exit_status -ne 0 ]; then log_message "User cancelled at world name"; return 1; fi
+        validate_world_name "$world_name"
+        log_message "Called validate_world_name with '$world_name', result=$?"
+        if validate_world_name "$world_name"; then
+            WORLD_NAME="$world_name"
+            break
+        else
+            show_message "Error" "World name must be at least 3 characters long." 8 78
+        fi
+    done
+    # Server Password
+    while true; do
+        local default_server_pass="${SERVER_PASS:- }"
+        log_message "Prompting for server password, default='$default_server_pass'"
+        local server_pass=$(whiptail --title "Server Configuration" --passwordbox "Enter Server Password (min 5 chars):" 8 78 "$default_server_pass" 3>&1 1>&2 2>&3)
+        local exit_status=$?
+        log_message "Server password prompt exit status: $exit_status, value='***'"
+        if [ $exit_status -ne 0 ]; then log_message "User cancelled at password"; return 1; fi
+        validate_password "$server_pass"
+        log_message "Called validate_password with '$server_pass', result=$?"
+        if validate_password "$server_pass"; then
+            SERVER_PASS="$server_pass"
+            break
+        else
+            show_message "Error" "Password must be at least 5 characters long." 8 78
+        fi
+    done
+    # Server Public Setting
+    if (whiptail --title "Server Configuration" --yesno "Make server public?" 8 78); then
+        SERVER_PUBLIC=1
+    else
+        SERVER_PUBLIC=0
+    fi
+    # Crossplay Setting (opens the server to PlayStation/Switch/Xbox players via PlayFab)
+    if (whiptail --title "Server Configuration" --yesno "Enable crossplay?\n(Allows PlayStation, Switch, and Xbox players to join in addition to Steam)" 10 78 --defaultno); then
+        SERVER_CROSSPLAY=1
+    else
+        SERVER_CROSSPLAY=0
+    fi
+
+    # Backup Settings
+    local default_backup=${BACKUP_DIR#./}
+    while true; do
+        local backup_dir=$(whiptail --title "Backup Configuration" --inputbox "Enter local backup folder name:" 8 78 "$default_backup" 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && return 1
+        if [[ -n "$backup_dir" ]]; then
+            BACKUP_DIR="./$backup_dir"
+            mkdir -p "$BACKUP_DIR"
+            break
+        else
+            show_message "Error" "Backup folder name cannot be empty." 8 78
+        fi
+    done
+    local default_max_bak=${MAX_BACKUPS:-24}
+    while true; do
+        local max_backups=$(whiptail --title "Backup Configuration" --inputbox "How many backups to keep? (number)" 8 78 "$default_max_bak" 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && return 1
+        if validate_number "$max_backups"; then
+            MAX_BACKUPS="$max_backups"
+            break
+        else
+            show_message "Error" "Please enter a valid number for backups to keep." 8 78
+        fi
+    done
+    local default_interval=${BACKUP_INTERVAL_HOURS:-1}
+    while true; do
+        local backup_interval=$(whiptail --title "Backup Configuration" --inputbox "Hours between automatic backups (number):" 8 78 "$default_interval" 3>&1 1>&2 2>&3)
+        [ $? -ne 0 ] && return 1
+        if validate_number "$backup_interval" && [ "$backup_interval" -ge 1 ]; then
+            BACKUP_INTERVAL_HOURS="$backup_interval"
+            break
+        else
+            show_message "Error" "Please enter a valid number (>=1) for backup interval." 8 78
+        fi
+    done
+    # Save configuration to .valheim.env (no spaces after =)
+    {
+        echo "SERVER_NAME=${SERVER_NAME}"
+        echo "WORLD_NAME=${WORLD_NAME}"
+        echo "SERVER_PASS=${SERVER_PASS}"
+        echo "SERVER_PUBLIC=${SERVER_PUBLIC}"
+        echo "SERVER_CROSSPLAY=${SERVER_CROSSPLAY}"
+        echo "BACKUP_DIR=${BACKUP_DIR}"
+        echo "MAX_BACKUPS=${MAX_BACKUPS}"
+        echo "BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS}"
+    } > .valheim.env
+    # Ask about Google Drive backup
+    if (whiptail --title "Google Drive Setup" --yesno "Would you like to set up Google Drive backup now?\n(This can be done later using the backup menu)" 10 78); then
+        backup_storage_setup
+    fi
+    # Build Docker image
+    {
+        echo "0"; echo "XXX"; echo "Building Docker image..."; echo "XXX"
+        docker build -t ${IMAGE_NAME} . >/dev/null 2>&1
+        echo "100"; echo "XXX"; echo "Build complete!"; echo "XXX"
+    } | whiptail --title "Building Server Image" --gauge "Please wait..." 8 78 0
+    show_message "Success" "Server configuration completed!\n\nYou can now start your server from the main menu." 10 78
+}
 
 # Function to show usage
 show_usage() {
@@ -100,8 +419,13 @@ show_usage() {
 
 # Function to check if server is running
 is_running() {
-    docker ps | grep -q $CONTAINER_NAME
-    return $?
+    # Check if container exists and is running
+    if docker container inspect $CONTAINER_NAME >/dev/null 2>&1; then
+        local status=$(docker container inspect -f '{{.State.Status}}' $CONTAINER_NAME 2>/dev/null)
+        [ "$status" = "running" ]
+        return $?
+    fi
+    return 1
 }
 
 # Function to create backup
@@ -111,7 +435,7 @@ create_backup() {
 
     # Create timestamp for backup file
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    BACKUP_FILE="$BACKUP_DIR/valheim_backup_$TIMESTAMP.tar.gz"
+    BACKUP_FILE="${BACKUP_DIR}/valheim_backup_${TIMESTAMP}.tar.gz"
 
     # Create backup
     echo "Creating backup: $BACKUP_FILE"
@@ -146,178 +470,347 @@ create_backup() {
 
 # Function to restore from backup
 restore_server() {
-    # Check if backup directory exists
     if [ ! -d "$BACKUP_DIR" ]; then
-        echo "Backup directory not found!"
+        show_message "Error" "Backup directory not found!" 8 78
         return 1
     fi
 
-    # List available backups
-    echo "Available backups:"
-    ls -1t "$BACKUP_DIR"/valheim_backup_*.tar.gz 2>/dev/null | nl || { echo "No backups found"; return 1; }
+    # Get list of backups
+    local backups=()
+    local i=1
+    while IFS= read -r backup; do
+        local backup_date=$(echo "$backup" | grep -o "[0-9]\{8\}_[0-9]\{6\}")
+        local formatted_date=$(date -d "${backup_date:0:8} ${backup_date:9:2}:${backup_date:11:2}:${backup_date:13:2}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+        if [ -n "$formatted_date" ]; then
+            backups+=("$i" "$formatted_date")
+            backup_files[$i]="$backup"
+            ((i++))
+        fi
+    done < <(ls -1t "$BACKUP_DIR"/valheim_backup_*.tar.gz 2>/dev/null)
 
-    # If no backups exist, exit
-    if [ ! "$(ls -A $BACKUP_DIR/valheim_backup_*.tar.gz 2>/dev/null)" ]; then
+    # Check if any backups exist
+    if [ ${#backups[@]} -eq 0 ]; then
+        show_message "Error" "No backups found in $BACKUP_DIR" 8 78
         return 1
     fi
 
-    # Ask which backup to restore
-    echo -e "\nEnter the number of the backup to restore (or 'q' to quit):"
-    read -r choice
-
-    # Exit if user chooses to quit
-    if [ "$choice" = "q" ]; then
-        echo "Restore cancelled"
+    # Show backup selection dialog
+    local CHOICE=$(whiptail --title "Restore Backup" --menu "Choose a backup to restore:" 20 78 10 "${backups[@]}" 3>&1 1>&2 2>&3)
+    
+    if [ $? -ne 0 ]; then
         return 0
     fi
 
     # Get the selected backup file
-    BACKUP_FILE=$(ls -1t "$BACKUP_DIR"/valheim_backup_*.tar.gz 2>/dev/null | sed -n "${choice}p")
-
-    if [ ! -f "$BACKUP_FILE" ]; then
-        echo "Invalid selection!"
-        return 1
-    fi
+    local BACKUP_FILE="${backup_files[$CHOICE]}"
 
     # Check if server is running
     if is_running; then
-        echo "Error: Please stop the Valheim server before restoring!"
-        echo "Run: ./server.sh stop"
+        show_message "Error" "Please stop the Valheim server before restoring!\nRun: ./server.sh stop" 8 78
         return 1
+    fi
+
+    # Confirm restore
+    if ! show_confirm "Confirm Restore" "Are you sure you want to restore from:\n$BACKUP_FILE\n\nThis will overwrite current world data!" 12 78; then
+        return 0
     fi
 
     # Create backup of current data before restore
-    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    PRERESTORE_BACKUP="$BACKUP_DIR/prerestore_backup_$TIMESTAMP.tar.gz"
-    echo "Creating backup of current data: $PRERESTORE_BACKUP"
-    tar -czf "$PRERESTORE_BACKUP" -C "$VALHEIM_DATA" . || echo "Warning: Failed to create pre-restore backup"
-
-    # Clear current data
-    echo "Clearing current data..."
-    rm -rf "$VALHEIM_DATA"/*
-
-    # Restore from backup
-    echo "Restoring from backup: $BACKUP_FILE"
-    mkdir -p "$VALHEIM_DATA"
-    tar -xzf "$BACKUP_FILE" -C "$VALHEIM_DATA"
+    local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    local PRERESTORE_BACKUP="$BACKUP_DIR/prerestore_backup_$TIMESTAMP.tar.gz"
+    
+    # Show progress for pre-restore backup
+    {
+        echo "0"
+        echo "XXX"
+        echo "Creating backup of current data..."
+        echo "XXX"
+        
+        tar -czf "$PRERESTORE_BACKUP" -C "$VALHEIM_DATA" . 2>/dev/null
+        
+        echo "25"
+        echo "XXX"
+        echo "Clearing current data..."
+        echo "XXX"
+        
+        rm -rf "$VALHEIM_DATA"/*
+        
+        echo "50"
+        echo "XXX"
+        echo "Restoring from backup..."
+        echo "XXX"
+        
+        mkdir -p "$VALHEIM_DATA"
+        tar -xzf "$BACKUP_FILE" -C "$VALHEIM_DATA"
+        
+        echo "100"
+        echo "XXX"
+        echo "Restore completed!"
+        echo "XXX"
+    } | whiptail --title "Restoring Backup" --gauge "Preparing restore process..." 8 78 0
 
     if [ $? -eq 0 ]; then
-        echo "Restore completed successfully"
+        show_message "Success" "Restore completed successfully!\n\nPre-restore backup created at:\n$PRERESTORE_BACKUP" 12 78
         return 0
     else
-        echo "Restore failed!"
+        show_message "Error" "Restore failed!\n\nPre-restore backup available at:\n$PRERESTORE_BACKUP" 12 78
         return 1
     fi
+}
+
+# The backup scheduler used to be a plain `while true; sleep; done &` background
+# loop tracked via a PID file. That loop had no relationship to any process
+# supervisor: it was only ever a child of whatever shell happened to start it,
+# so it was silently reaped whenever that shell's session ended for any reason
+# (closing the terminal, the Deck suspending, a desktop session restart, etc.)
+# -- with nothing to report the loss, since there was nothing left alive to
+# report it. Docker itself never had this problem because it's a real systemd
+# service, supervised independently of any login session. The fix is to give
+# the backup schedule the same property: manage it as an actual systemd --user
+# timer instead of an ad-hoc background loop. Timers survive session churn,
+# catch up on missed runs after downtime (Persistent=true), and are inspectable
+# with systemctl/journalctl instead of a PID file that can silently go stale.
+
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+BACKUP_TIMER_UNIT="valheim-backup.timer"
+BACKUP_SERVICE_UNIT="valheim-backup.service"
+
+# Install (or update) the systemd --user timer/service pair for scheduled
+# backups, matching the current BACKUP_INTERVAL_HOURS, and enable+start it.
+# Also ensures the user's systemd instance keeps running (and thus the timer
+# keeps firing) even without an active login/desktop session.
+install_backup_timer() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "systemctl not found -- cannot install the backup timer on this system."
+        return 1
+    fi
+
+    local script_path
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    local work_dir
+    work_dir="$(dirname "$script_path")"
+    local interval_hours="${BACKUP_INTERVAL_HOURS:-1}"
+
+    mkdir -p "$SYSTEMD_USER_DIR"
+
+    cat > "$SYSTEMD_USER_DIR/$BACKUP_SERVICE_UNIT" <<EOF
+[Unit]
+Description=Valheim server backup and Google Drive sync
+
+[Service]
+Type=oneshot
+WorkingDirectory=$work_dir
+ExecStart=$script_path backup
+EOF
+
+    cat > "$SYSTEMD_USER_DIR/$BACKUP_TIMER_UNIT" <<EOF
+[Unit]
+Description=Run the Valheim backup on a schedule
+
+[Timer]
+OnActiveSec=${interval_hours}h
+OnUnitActiveSec=${interval_hours}h
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    # Let the user's systemd instance (and this timer) keep running even when
+    # no one is logged into a desktop session -- otherwise the timer would be
+    # exposed to the exact same "dies when the session ends" problem this is
+    # meant to fix.
+    loginctl enable-linger "$(whoami)" >/dev/null 2>&1
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$BACKUP_TIMER_UNIT" >/dev/null 2>&1
+    systemctl --user restart "$BACKUP_TIMER_UNIT"
+}
+
+# Stop and disable the backup timer (used when the server itself is stopped).
+remove_backup_timer() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl --user disable --now "$BACKUP_TIMER_UNIT" >/dev/null 2>&1
 }
 
 # Function to manage the backup scheduler
 check_backup_scheduler() {
-    # Kill any existing backup loop before starting a new one
-    if [ -f /tmp/valheim_backup_pid ]; then
-        backup_pid=$(cat /tmp/valheim_backup_pid)
-        if kill -0 $backup_pid 2>/dev/null; then
-            echo "Killing existing backup loop (PID $backup_pid)..."
-            c $backup_pid
-        fi
-        rm -f /tmp/valheim_backup_pid
-    fi
-    
     if is_running; then
-        local interval_sec=$(( ${BACKUP_INTERVAL_HOURS:-1} * 3600 ))
-        echo "Starting hourly backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
-        (
-            while true; do
-                sleep $interval_sec
-                if is_running; then
-                    echo "[$(date)] Running scheduled backup..."
-                    create_backup
-                fi
-            done
-        ) &
-        echo $! > /tmp/valheim_backup_pid
+        echo "Starting backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
+        install_backup_timer
     else
         echo "No running server, backup scheduler not started."
+        remove_backup_timer
     fi
 }
 
-# Function to start server
+# Function to start server (robust, used by both CLI and menu)
 start_server() {
     if is_running; then
-        echo "Server is already running!"
+        show_message "Error" "Server is already running!" 8 78
         return 1
     fi
-    
-    # Check if Docker image exists
+    if ! require_sudo "Starting the server requires sudo privileges."; then
+        show_message "Error" "Sudo access denied or cancelled." 8 78
+        return 1
+    fi
+
+    # Check if Docker image exists and build if needed
     if ! docker image inspect ${IMAGE_NAME}:latest >/dev/null 2>&1; then
-        echo "Docker image not found. Building image..."
-        docker build -t ${IMAGE_NAME} .
-        if [ $? -ne 0 ]; then
-            echo "Failed to build Docker image"
-            return 1
+        if command -v whiptail >/dev/null 2>&1; then
+            {
+                echo "0"; echo "XXX"; echo "Building Docker image..."; echo "XXX"
+                docker build -t ${IMAGE_NAME} . >/dev/null 2>&1
+                echo "100"; echo "XXX"; echo "Docker image built."; echo "XXX"
+            } | whiptail --title "Building Image" --gauge "Please wait..." 8 78 0
+        else
+            echo "Docker image not found. Building image..."
+            docker build -t ${IMAGE_NAME} .
         fi
     fi
-    
-    # Check for and remove stopped container with the same name
+
+    # Remove existing container if it exists
     if docker ps -a | grep -q $CONTAINER_NAME; then
-        echo "Removing existing stopped container..."
-        docker rm $CONTAINER_NAME
+        if command -v whiptail >/dev/null 2>&1; then
+            echo "Removing old container..."
+        fi
+        docker rm $CONTAINER_NAME >/dev/null 2>&1
     fi
-    
-    # Create cache volume if it doesn't exist
+
+    # Create cache volume if needed
     if ! docker volume ls | grep -q $CACHE_VOLUME; then
-        echo "Creating cache volume..."
-        docker volume create $CACHE_VOLUME
+        if command -v whiptail >/dev/null 2>&1; then
+            echo "Creating cache volume..."
+        fi
+        docker volume create $CACHE_VOLUME >/dev/null 2>&1
     fi
-    
-    # Ensure data directories exist
-    setup_data_directories
-    
-    echo "Starting Valheim server..."
-    echo "World data will be stored in: ${VALHEIM_DATA}/worlds_local"
-    # Start the server with updated volume mount for dedicated save path
-    docker run -d --name $CONTAINER_NAME \
-        -p 2456-2458:2456-2458/udp \
-        -v "$(pwd)/${VALHEIM_DATA}:/valheimdata" \
-        -v "$CACHE_VOLUME:/home/steam/valheim-cache" \
-        -e SERVER_NAME="$SERVER_NAME" \
-        -e WORLD_NAME="$WORLD_NAME" \
-        -e SERVER_PASS="$SERVER_PASS" \
-        -e SERVER_PUBLIC=$SERVER_PUBLIC \
-        --restart unless-stopped \
-        ${IMAGE_NAME}:latest
+
+    # Ensure data directories exist and set permissions
+    mkdir -p "${VALHEIM_DATA}/worlds_local" "${VALHEIM_DATA}/worlds" "${VALHEIM_DATA}/characters" "${VALHEIM_DATA}/saves"
+    sudo chown -R 1000:1000 "${VALHEIM_DATA}" >/dev/null 2>&1
+    chmod -R u+rwx,g+rwx,o+rx "${VALHEIM_DATA}" >/dev/null 2>&1
+
+    # Start the server
+    if command -v whiptail >/dev/null 2>&1; then
+        {
+            echo "0"; echo "XXX"; echo "Starting Valheim server..."; echo "XXX"
+            docker run -d --name $CONTAINER_NAME \
+                -p 2456-2458:2456-2458/udp \
+                -v "$(pwd)/${VALHEIM_DATA}:/valheimdata" \
+                -v "$CACHE_VOLUME:/home/steam/valheim-cache" \
+                -e SERVER_NAME="$SERVER_NAME" \
+                -e WORLD_NAME="$WORLD_NAME" \
+                -e SERVER_PASS="$SERVER_PASS" \
+                -e SERVER_PUBLIC=$SERVER_PUBLIC \
+                -e SERVER_CROSSPLAY=${SERVER_CROSSPLAY:-0} \
+                -e VALHEIM_SAVE_PATH="/valheimdata" \
+                --restart unless-stopped \
+                ${IMAGE_NAME}:latest >/dev/null 2>&1
+            sleep 2
+            echo "100"; echo "XXX"; echo "Server startup complete!"; echo "XXX"
+        } | whiptail --title "Starting Server" --gauge "Please wait..." 8 78 0
+    else
+        echo "Starting Valheim server..."
+        docker run -d --name $CONTAINER_NAME \
+            -p 2456-2458:2456-2458/udp \
+            -v "$(pwd)/${VALHEIM_DATA}:/valheimdata" \
+            -v "$CACHE_VOLUME:/home/steam/valheim-cache" \
+            -e SERVER_NAME="$SERVER_NAME" \
+            -e WORLD_NAME="$WORLD_NAME" \
+            -e SERVER_PASS="$SERVER_PASS" \
+            -e SERVER_PUBLIC=$SERVER_PUBLIC \
+            -e SERVER_CROSSPLAY=${SERVER_CROSSPLAY:-0} \
+            -e VALHEIM_SAVE_PATH="/valheimdata" \
+            --restart unless-stopped \
+            ${IMAGE_NAME}:latest
+        sleep 2
+    fi
+
+    # Log debug info
+    {
+        echo "[DEBUG] Environment Check ($(date)):"
+        echo "Script environment:"
+        echo "  SERVER_NAME='$SERVER_NAME'"
+        echo "  WORLD_NAME='$WORLD_NAME'"
+        echo "  SERVER_PASS='$SERVER_PASS'"
+        echo "  VALHEIM_DATA='$VALHEIM_DATA'"
+        echo "  VALHEIM_SAVE_PATH='/valheimdata'"
+        echo ""
+        echo "Container environment:"
+        docker exec $CONTAINER_NAME env | grep -E "SERVER_|WORLD_|VALHEIM_"
+        echo ""
+        echo "World files:"
+        ls -la "$(pwd)/${VALHEIM_DATA}/worlds_local/" || echo "No world files found"
+    } >> /tmp/valheim_server.log 2>&1
+
+    # Check if server started successfully
+    if is_running; then
+        show_message "Success" "Server started successfully!\n\nWorld data location: ${VALHEIM_DATA}/worlds_local" 10 78
+    else
+        show_message "Error" "Failed to start server. Please check logs for details." 8 78
+        return 1
+    fi
 
     # Start or restart the backup scheduler
     check_backup_scheduler
 }
 
-# Function to stop server
+# Function to stop server (robust, used by both CLI and menu)
 stop_server() {
+    if [ -t 1 ] && ! show_confirm "Confirm Stop" "Are you sure you want to stop the server?" 8 78; then
+        return 1
+    fi
+    if ! require_sudo "Stopping the server requires sudo privileges."; then
+        show_message "Error" "Sudo access denied or cancelled." 8 78
+        return 1
+    fi
+
     if ! is_running; then
-        echo "Server is not running."
+        show_message "Info" "Server is not running." 8 78
         check_backup_scheduler
         return 0
     fi
 
-    echo "Preparing to stop Valheim server..."
-    
-    # Create backup before shutdown
-    echo "Creating backup before shutdown..."
-    create_backup
-
-    # Stop the container
-    echo "Stopping Valheim server..."
-    if docker stop --time=30 $CONTAINER_NAME; then
-        echo "Server stopped successfully."
+    # Show progress if whiptail is available
+    if command -v whiptail >/dev/null 2>&1; then
+        {
+            echo "0"; echo "XXX"; echo "Preparing to stop Valheim server..."; echo "XXX"
+            sleep 0.5
+            echo "20"; echo "XXX"; echo "Creating backup before shutdown..."; echo "XXX"
+            create_backup >/dev/null 2>&1
+            echo "60"; echo "XXX"; echo "Stopping Valheim server..."; echo "XXX"
+            if docker stop --timeout=30 $CONTAINER_NAME >/dev/null 2>&1; then
+                echo "80"; echo "XXX"; echo "Server stopped successfully."; echo "XXX"
+            else
+                echo "80"; echo "XXX"; echo "Warning: Server stop timed out, forcing shutdown..."; echo "XXX"
+                docker kill $CONTAINER_NAME >/dev/null 2>&1
+            fi
+            echo "90"; echo "XXX"; echo "Cleaning up permissions..."; echo "XXX"
+            sudo chown -R $(whoami):$(whoami) "${VALHEIM_DATA}" >/dev/null 2>&1
+            echo "100"; echo "XXX"; echo "Server shutdown complete!"; echo "XXX"
+        } | whiptail --title "Stopping Server" --gauge "Please wait..." 8 78 0
     else
-        echo "Warning: Server stop timed out, forcing shutdown..."
-        docker kill $CONTAINER_NAME
+        echo "Preparing to stop Valheim server..."
+        echo "Creating backup before shutdown..."
+        create_backup
+        echo "Stopping Valheim server..."
+        if docker stop --timeout=30 $CONTAINER_NAME; then
+            echo "Server stopped successfully."
+        else
+            echo "Warning: Server stop timed out, forcing shutdown..."
+            docker kill $CONTAINER_NAME
+        fi
+        echo "Cleaning up permissions..."
+        sudo chown -R $(whoami):$(whoami) "${VALHEIM_DATA}"
+        echo "Server shutdown complete!"
     fi
 
     # Verify server is stopped
     if ! is_running; then
-        echo "Server is now offline."
+        show_message "Success" "Server stopped successfully!" 8 78
     else
-        echo "Error: Server is still running! Please check server status."
+        show_message "Error" "Failed to stop server. Please check logs for details." 12 78
         return 1
     fi
     # Stop or restart the backup scheduler
@@ -327,20 +820,111 @@ stop_server() {
 # Function to show status
 show_status() {
     if is_running; then
-        echo "Server status: RUNNING"
-        echo "Container stats:"
-        docker stats $CONTAINER_NAME --no-stream
-        echo -e "\nServer ports:"
-        ss -panu | grep :245
+        {
+            echo "0"; echo "XXX"; echo "Getting server status..."; echo "XXX"
+            
+            # Ensure bc is available for calculations
+            if ! command -v bc >/dev/null 2>&1; then
+                if command -v apt-get >/dev/null 2>&1; then
+                    sudo apt-get update && sudo apt-get install -y bc >/dev/null 2>&1
+                elif command -v yum >/dev/null 2>&1; then
+                    sudo yum install -y bc >/dev/null 2>&1
+                elif command -v pacman >/dev/null 2>&1; then
+                    sudo pacman -S --noconfirm bc >/dev/null 2>&1
+                fi
+            fi
+            
+            # Get container stats
+            local stats=""
+            local temp_stats=$(mktemp)
+            if docker stats --no-stream $CONTAINER_NAME > "$temp_stats" 2>/dev/null; then
+                # Skip header line and get stats
+                local stats_line=$(tail -n 1 "$temp_stats")
+                if [ -n "$stats_line" ]; then
+                    local cpu=$(echo "$stats_line" | awk '{print $3}')
+                    local mem=$(echo "$stats_line" | awk '{print $4" / "$6}')
+                    local net=$(echo "$stats_line" | awk '{print $8" / "$10}')
+                    
+                    stats="   • CPU: $cpu\n"
+                    stats+="   • Memory: $mem\n"
+                    stats+="   • Network I/O: $net"
+                fi
+            fi
+            rm -f "$temp_stats"
+            
+            # Get uptime
+            local uptime=""
+            local state=$(docker inspect -f '{{.State.Status}} {{.State.StartedAt}}' $CONTAINER_NAME 2>/dev/null)
+            if [[ "$state" =~ ^running\ (.+)$ ]]; then
+                local started_at="${BASH_REMATCH[1]}"
+                local start_seconds=$(date -d "$started_at" +%s 2>/dev/null)
+                if [ -n "$start_seconds" ]; then
+                    local now_seconds=$(date +%s)
+                    local uptime_seconds=$((now_seconds - start_seconds))
+                    
+                    local days=$((uptime_seconds / 86400))
+                    local hours=$(((uptime_seconds % 86400) / 3600))
+                    local minutes=$(((uptime_seconds % 3600) / 60))
+                    
+                    uptime=""
+                    [ $days -gt 0 ] && uptime+="$days day$([ $days -ne 1 ] && echo "s") "
+                    [ $hours -gt 0 ] && uptime+="$hours hour$([ $hours -ne 1 ] && echo "s") "
+                    uptime+="$minutes minute$([ $minutes -ne 1 ] && echo "s")"
+                    # Trim trailing space
+                    uptime=$(echo "$uptime" | sed 's/ $//')
+                else
+                    uptime="Unable to calculate"
+                fi
+            else
+                uptime="Unable to determine"
+            fi
+            
+            # Get number of connected players
+            local player_count=$(docker logs $CONTAINER_NAME 2>&1 | grep -c "Got character ZDOID from" || echo "0")
+            local current_players=$(docker logs $CONTAINER_NAME 2>&1 | grep "Got character ZDOID from" | tail -n $player_count | awk -F "from " '{print $2}' | awk -F " :" '{print $1}' | sort | uniq)
+            
+            echo "100"; echo "XXX"; echo "Status retrieved!"; echo "XXX"
+        } | whiptail --title "Getting Status" --gauge "Please wait..." 8 78 0
+
+        # Build status message
+        local status_msg="🟢 Server Status: RUNNING\n"
+        status_msg+="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        status_msg+="📋 Server Info:\n"
+        status_msg+="   • Name: $SERVER_NAME\n"
+        status_msg+="   • World: $WORLD_NAME\n"
+        status_msg+="   • Public: $([ "$SERVER_PUBLIC" == "1" ] && echo "Yes" || echo "No")\n"
+        status_msg+="   • Crossplay: $([ "$SERVER_CROSSPLAY" == "1" ] && echo "Yes" || echo "No")\n"
+        status_msg+="   • Uptime: $uptime\n\n"
+        
+        if [ -n "$stats" ]; then
+            status_msg+="📊 Performance:\n$stats\n\n"
+        else
+            status_msg+="📊 Performance:\n   • Unable to retrieve performance data\n\n"
+        fi
+        
+        status_msg+="👥 Connected Players:\n"
+        if [ -n "$current_players" ]; then
+            while IFS= read -r player; do
+                status_msg+="   • $player\n"
+            done <<< "$current_players"
+        else
+            status_msg+="   • No players connected\n"
+        fi
+        
+        whiptail --title "Server Status" --msgbox "$status_msg" 20 78
     else
-        echo "Server status: STOPPED"
+        whiptail --title "Server Status" --msgbox "🔴 Server Status: STOPPED\n\nUse the 'Start Server' option to start the server." 10 78
     fi
 }
 
-# Function to list connected players
+# Function to list connected players (robust, used by both CLI and menu)
 list_players() {
     if ! is_running; then
-        echo "Error: Server is not running"
+        if command -v whiptail >/dev/null 2>&1; then
+            whiptail --title "Error" --msgbox "Server is not running" 8 78
+        else
+            echo "Error: Server is not running"
+        fi
         return 1
     fi
 
@@ -395,30 +979,40 @@ list_players() {
         fi
     done < "$TEMP_LOG"
 
-    # Display current players
-    echo "Players Online:"
+    # Build output
+    output="Players Online:\n"
     if [ -s "$TEMP_PLAYERS" ]; then
         while IFS=: read -r steamid player timestamp; do
-            echo "👤 $player"
+            output+="👤 $player\n"
         done < "$TEMP_PLAYERS"
     else
-        echo "No players currently connected"
+        output+="No players currently connected\n"
     fi
     
     # Cleanup temporary files
     rm -f "$TEMP_LOG" "$TEMP_PLAYERS" "$TEMP_STEAMIDS" "$DEBUG_LOG"
+
+    # Show output
+    if command -v whiptail >/dev/null 2>&1; then
+        whiptail --title "Connected Players" --scrolltext --msgbox "$output" 20 78
+    else
+        echo -e "$output"
+    fi
 }
 
 # Function to check server accessibility
 access_server() {
     if ! is_running; then
-        echo "Error: Server is not running"
+        if [ -n "$DISPLAY" ] || command -v whiptail >/dev/null 2>&1; then
+            whiptail --title "Error" --msgbox "Server is not running.\nPlease start the server first to view access information." 8 78
+        else
+            printf "Error: Server is not running\n"
+            printf "Please start the server first to view access information.\n"
+        fi
         return 1
     fi
 
-    echo "Valheim Server Access Information"
-    echo "----------------------------------------"
-    
+    # Get server information
     SERVER_IP=$(hostname -I | awk '{print $1}') # Get local IP
     
     # Attempt to get public IP, fallback to N/A if curl fails or returns nothing
@@ -429,29 +1023,41 @@ access_server() {
         PUBLIC_IP="N/A"
     fi
 
-    echo "🟢 Joining for Internal (LAN) Players:"
-    if [ -n "$SERVER_IP" ]; then
-        echo "   Connect to IP: $SERVER_IP:2456"
-    else
-        echo "   Could not determine local IP address."
-    fi
-    echo "   Server Name: $SERVER_NAME"
-    echo "   Password: $SERVER_PASS"
-    echo ""
-
-    echo "🌍 Joining for External (WAN/Internet) Players:"
-    if [ "$PUBLIC_IP" != "N/A" ]; then
-        echo "   Your Public IP: $PUBLIC_IP"
-        echo "   Players should try to connect to: $PUBLIC_IP:2456"
-        echo "   NOTE: This requires port forwarding (UDP ports 2456-2458) to be set up on your router, pointing to this server's local IP ($SERVER_IP)."
-    else
-        echo "   Could not determine public IP address. External access might not be possible without it."
-    fi
-    echo "   Server Name: $SERVER_NAME"
-    echo "   Password: $SERVER_PASS"
-    echo ""
+    # Build the message
+    local msg
+    msg="Valheim Server Access Information\n"
+    msg+="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     
-    echo "✨ If players cannot connect externally, ensure UDP ports 2456, 2457, and 2458 are correctly forwarded in your router/firewall to this server's local IP: $SERVER_IP"
+    msg+="🟢 Joining for Internal (LAN) Players:\n"
+    if [ -n "$SERVER_IP" ]; then
+        msg+="   • Connect to IP: $SERVER_IP:2456\n"
+    else
+        msg+="   • Could not determine local IP address.\n"
+    fi
+    msg+="   • Server Name: $SERVER_NAME\n"
+    msg+="   • Password: $SERVER_PASS\n\n"
+
+    msg+="🌍 Joining for External (WAN/Internet) Players:\n"
+    if [ "$PUBLIC_IP" != "N/A" ]; then
+        msg+="   • Your Public IP: $PUBLIC_IP\n"
+        msg+="   • Connect to: $PUBLIC_IP:2456\n"
+        msg+="   • NOTE: Port forwarding required (UDP 2456-2458)\n"
+    else
+        msg+="   • Could not determine public IP address\n"
+        msg+="   • External access may not be possible\n"
+    fi
+    msg+="   • Server Name: $SERVER_NAME\n"
+    msg+="   • Password: $SERVER_PASS\n\n"
+    
+    msg+="✨ Port Forwarding:\n"
+    msg+="   Forward UDP ports 2456-2458 to local IP: $SERVER_IP"
+
+    # Display the message using whiptail if available, otherwise use printf
+    if [ -n "$DISPLAY" ] || command -v whiptail >/dev/null 2>&1; then
+        whiptail --title "Server Access Information" --scrolltext --msgbox "$msg" 24 78
+    else
+        printf "%b" "$msg\n"
+    fi
 }
 
 # Function to cleanup cache
@@ -476,316 +1082,474 @@ cleanup_cache() {
     fi
 }
 
-# Add a new function to check data persistence
+# Function to check data persistence
 check_data_persistence() {
-    echo "Checking data persistence..."
-    echo "World files location: ${VALHEIM_DATA}/worlds_local"
-    echo "Current world files:"
-    ls -la "${VALHEIM_DATA}/worlds_local"
-    echo
-    echo "Other save-related files (characters, etc.) are in: ${VALHEIM_DATA}/"
-    echo "Current character files (example):" # Valheim might save characters under a 'characters' subfolder or directly if not further specified by game.
-    ls -la "${VALHEIM_DATA}/characters" # Assuming characters are in a subfolder as per our setup_data_directories
-}
-
-# Function to set up rclone/Google Drive backup
-backup_storage_setup() {
-    echo "\n=== Google Drive Backup Setup (rclone) ==="
-    if ! command -v rclone &>/dev/null; then
-        echo "rclone is not installed."
-        read -p "Would you like to install rclone now? (y/n): " yn
-        case $yn in
-            [Yy]*)
-                if command -v pacman &>/dev/null; then
-                    echo "Installing rclone using pacman..."
-                    sudo pacman -S --noconfirm rclone || { echo "Failed to install rclone. Please install it manually."; return 1; }
-                else
-                    echo "Automatic install not supported on this system. Please install rclone manually (see https://rclone.org/install/)."
-                    return 1
-                fi
-                ;;
-            *)
-                echo "rclone is required for Google Drive backup. Skipping setup."
-                return 1
-                ;;
-        esac
-    fi
-
-    # Prompt for remote name, default to current or VALHEIM-SDDS
-    default_remote=${RCLONE_REMOTE:-VALHEIM-SDDS}
-    read -p "Enter the rclone remote name to use for Google Drive [${default_remote}]: " remote
-    remote=${remote:-$default_remote}
-
-    # Create the remote if it doesn't exist or if user chooses to reconfigure
-    if ! rclone listremotes | grep -q "^$remote:"; then
-        echo "Creating Google Drive remote '$remote'..."
-        rclone config create "$remote" drive scope=drive || { echo "Failed to create rclone remote."; return 1; }
-        echo "Authorizing Google Drive remote '$remote' (this will open a browser)..."
-        rclone config reconnect "$remote": || { echo "Google Drive authorization failed."; return 1; }
-    else
-        echo "Google Drive remote '$remote' already exists."
-        read -p "Do you want to delete the existing remote '$remote' and reconfigure it? (y/n): " reconfigure_choice
-        if [[ "$reconfigure_choice" == [Yy]* ]]; then
-            echo "Deleting existing remote '$remote'..."
-            rclone config delete "$remote" || { echo "Failed to delete existing remote '$remote'. Please check rclone configuration manually."; return 1; }
-            echo "Re-creating Google Drive remote '$remote'..."
-            rclone config create "$remote" drive scope=drive || { echo "Failed to create rclone remote."; return 1; }
-            echo "Authorizing Google Drive remote '$remote' (this will open a browser)..."
-            rclone config reconnect "$remote": || { echo "Google Drive authorization failed."; return 1; }
-            echo "Remote '$remote' reconfigured successfully."
-        else
-            echo "Keeping existing remote '$remote' configuration."
-        fi
-    fi
-
-    # Prompt for Google Drive folder path, default to current or valheim-backups
-    default_path=${RCLONE_PATH:-valheim-backups}
-    read -p "Enter the folder path in your Google Drive for backups [${default_path}]: " path
-    path=${path:-$default_path}
-    RCLONE_REMOTE="$remote"
-    RCLONE_PATH="$path"
-
-    # Save to .valheim.env (append or update)
-    grep -v '^RCLONE_REMOTE=' .valheim.env 2>/dev/null | \
-      grep -v '^RCLONE_PATH=' > .valheim.env.tmp || true
-    mv .valheim.env.tmp .valheim.env 2>/dev/null || true
-    echo "RCLONE_REMOTE=\"$RCLONE_REMOTE\"" >> .valheim.env
-    echo "RCLONE_PATH=\"$RCLONE_PATH\"" >> .valheim.env
-    echo "Google Drive backup configuration saved!"
-
-    # Re-source .valheim.env to update variables in current shell
-    if [ -f .valheim.env ]; then
-        source .valheim.env
-    fi
-}
-
-setup_server_config() {
-    echo "Let's set up your Valheim server configuration."
-    read -p "Server Name [${SERVER_NAME}]: " input
-    SERVER_NAME="${input:-$SERVER_NAME}"
-
-    read -p "World Name [${WORLD_NAME}]: " input
-    WORLD_NAME="${input:-$WORLD_NAME}"
-
-    while true; do
-        read -p "Server Password (min 5 chars) [${SERVER_PASS}]: " input
-        input="${input:-$SERVER_PASS}"
-        if [ ${#input} -ge 5 ]; then
-            SERVER_PASS="$input"
-            break
-        else
-            echo "Password must be at least 5 characters."
-        fi
-    done
-
-    while true; do
-        read -p "Public Server? (1=Yes, 0=No) [${SERVER_PUBLIC}]: " input
-        input="${input:-$SERVER_PUBLIC}"
-        if [[ "$input" == "1" || "$input" == "0" ]]; then
-            SERVER_PUBLIC="$input"
-            break
-        else
-            echo "Please enter 1 for public or 0 for private."
-        fi
-    done
-
-    # Ask for local backup folder name
-    default_local_backup=${BACKUP_DIR:-valheim-backups}
-    read -p "Enter the local backup folder name (default: ${default_local_backup}): " local_backup
-    local_backup=${local_backup:-$default_local_backup}
-    BACKUP_DIR="./$local_backup"
-    mkdir -p "$BACKUP_DIR"
-    echo "Local backup folder set to: $BACKUP_DIR"
-
-    # Ask for number of backups to keep
-    default_max_bak=${MAX_BACKUPS:-24}
-    read -p "How many backups do you want to keep? (default: ${default_max_bak}): " max_bak
-    max_bak=${max_bak:-$default_max_bak}
-    MAX_BACKUPS="$max_bak"
-    echo "Will keep the last $MAX_BACKUPS backups."
-
-    # Ask for backup interval in hours
-    default_backup_interval=${BACKUP_INTERVAL_HOURS:-1}
-    read -p "How many hours should be between each automatic backup? (default: ${default_backup_interval}): " backup_interval
-    backup_interval=${backup_interval:-$default_backup_interval}
-    BACKUP_INTERVAL_HOURS="$backup_interval"
-    echo "Backups will be made every $BACKUP_INTERVAL_HOURS hour(s) while the server is running."
-
-    # Save to .valheim.env (append or update)
-    grep -v '^RCLONE_REMOTE=' .valheim.env 2>/dev/null | \
-      grep -v '^RCLONE_PATH=' | \
-      grep -v '^BACKUP_DIR=' | \
-      grep -v '^MAX_BACKUPS=' | \
-      grep -v '^BACKUP_INTERVAL_HOURS=' > .valheim.env.tmp || true
-    mv .valheim.env.tmp .valheim.env 2>/dev/null || true
-    echo "BACKUP_DIR=\"$BACKUP_DIR\"" >> .valheim.env
-    echo "MAX_BACKUPS=\"$MAX_BACKUPS\"" >> .valheim.env
-    echo "BACKUP_INTERVAL_HOURS=\"$BACKUP_INTERVAL_HOURS\"" >> .valheim.env
-
-    # Ask about Google Drive backup
-    while true; do
-        read -p "OPTIONAL (THIS CAN BE SET UP LATER USING './server.sh gdrive-sync-setup') - Would you like to set up Google Drive backup now? (y/n): " yn
-        case $yn in
-            [Yy]*) backup_storage_setup; break;;
-            [Nn]*) break;;
-            *) echo "Please answer y or n.";;
-        esac
-    done
-
-    echo "Building the Docker image for the Valheim server..."
-    docker build -t ${IMAGE_NAME} .
-    if [ $? -eq 0 ]; then
-        echo "Docker image built successfully!"
-        echo "You can now start your server with: ./server.sh start"
-    else
-        echo "Docker image build failed. Please check the output above for errors."
-    fi
-}
-
-# Function to manually sync backup directory to Google Drive
-gdrive_sync() {
-    if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
-        if command -v rclone &>/dev/null; then
-            echo "Syncing local backup directory to Google Drive via rclone..."
-            echo "  Local folder: $BACKUP_DIR"
-            echo "  Remote path: $RCLONE_REMOTE:$RCLONE_PATH/"
-            echo
-            rclone sync -P --transfers=3 "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH/" && \
-                echo "✅ Local backup directory synced to Google Drive!" || echo "❌ rclone sync failed."
-        else
-            echo "rclone is not installed. Skipping Google Drive backup."
-        fi
-    else
-        echo "Google Drive sync is not configured. Run './server.sh gdrive-sync-setup' first."
-    fi
+    local world_files=$(ls -la "${VALHEIM_DATA}/worlds_local" 2>/dev/null)
+    local char_files=$(ls -la "${VALHEIM_DATA}/characters" 2>/dev/null)
+    
+    local output="World Files Location: ${VALHEIM_DATA}/worlds_local\n\n"
+    output+="Current World Files:\n$world_files\n\n"
+    output+="Character Files Location: ${VALHEIM_DATA}/characters\n\n"
+    output+="Current Character Files:\n$char_files"
+    
+    whiptail --title "Data Persistence Check" --scrolltext --msgbox "$output" 24 78
 }
 
 # Function to describe the backup schedule in human language
 backup_schedule() {
-    # Check if the backup scheduler is running
+    # Check if the backup timer is actually enabled and active in systemd
     local scheduler_status="OFF"
-    if [ -f /tmp/valheim_backup_pid ]; then
-        backup_pid=$(cat /tmp/valheim_backup_pid)
-        if kill -0 $backup_pid 2>/dev/null; then
-            scheduler_status="ON"
-        fi
+    local next_run=""
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active "$BACKUP_TIMER_UNIT" >/dev/null 2>&1; then
+        scheduler_status="ON"
+        next_run=$(systemctl --user list-timers "$BACKUP_TIMER_UNIT" --no-legend 2>/dev/null | awk '{print $1, $2, $3}')
     fi
-    if [ "$scheduler_status" = "ON" ]; then
-        echo "🟢 Backup Scheduler: ON (scheduled backups active)"
-    else
-        echo "🔴 Backup Scheduler: OFF (no scheduled backups running)"
-    fi
-    echo
-    echo "🗂️  Valheim Server Backup Schedule"
-    echo "────────────────────────────────────"
-    echo "⏰ Frequency:"
-    echo "   • Every ${BACKUP_INTERVAL_HOURS:-1} hour(s) while the server is running"
-    echo "   • Before the server is stopped"
-    echo "   • Manual backups: ./server.sh backup"
-    echo
-    echo "💾 Retention:"
-    echo "   • Keeps the last $MAX_BACKUPS backups"
-    echo "   • Backup location: $BACKUP_DIR"
-    echo
+
+    cat << EOF
+🗂️  Valheim Server Backup Schedule
+────────────────────────────────────
+🔵 Backup Scheduler: $scheduler_status$([ -n "$next_run" ] && echo " (next run: $next_run)")
+
+⏰ Frequency:
+   • Every ${BACKUP_INTERVAL_HOURS:-1} hour(s) while server is running
+   • Before server shutdown
+   • Manual backups available
+
+💾 Retention:
+   • Keeps last $MAX_BACKUPS backups
+   • Location: $BACKUP_DIR
+
+☁️  Cloud Sync:
+EOF
     if [ -n "$RCLONE_REMOTE" ] && [ -n "$RCLONE_PATH" ]; then
-        echo "☁️  Cloud Sync:"
-        echo "   • Google Drive sync is ENABLED"
+        echo "   • Google Drive sync ENABLED"
         echo "   • Remote: $RCLONE_REMOTE"
         echo "   • Folder: $RCLONE_PATH"
     else
-        echo "☁️  Cloud Sync:"
-        echo "   • Google Drive sync is DISABLED"
+        echo "   • Google Drive sync DISABLED"
     fi
-    echo
 }
 
 # Function to re-enable the backup scheduler if not running
 backup_reenable() {
-    if [ -f /tmp/valheim_backup_pid ]; then
-        backup_pid=$(cat /tmp/valheim_backup_pid)
-        if kill -0 $backup_pid 2>/dev/null; then
-            echo "🟢 Backup scheduler is already running (PID $backup_pid)."
-            return 0
-        else
-            rm -f /tmp/valheim_backup_pid
-        fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active "$BACKUP_TIMER_UNIT" >/dev/null 2>&1; then
+        echo "🟢 Backup scheduler is already running."
+        return 0
     fi
     if is_running; then
-        local interval_sec=$(( ${BACKUP_INTERVAL_HOURS:-1} * 3600 ))
         echo "Starting backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
-        (
-            while true; do
-                sleep $interval_sec
-                if is_running; then
-                    echo "[$(date)] Running scheduled backup..."
-                    create_backup
-                fi
-            done
-        ) &
-        echo $! > /tmp/valheim_backup_pid
-        echo "🟢 Backup scheduler started (PID $(cat /tmp/valheim_backup_pid))."
+        if install_backup_timer; then
+            echo "🟢 Backup scheduler started (systemd timer: $BACKUP_TIMER_UNIT)."
+        else
+            echo "🔴 Failed to start the backup scheduler. See errors above."
+            return 1
+        fi
     else
         echo "🔴 Server is not running. Start the server first to enable the backup scheduler."
     fi
 }
 
-# Main script
-case "$1" in
-    start)
-        start_server
-        ;;
-    stop)
+# Function to show output in a scrollable dialog
+show_output() {
+    local title="$1"
+    local text="$2"
+    whiptail --title "$title" --scrolltext --msgbox "$text" 20 78
+}
+
+# Function to capture command output
+capture_output() {
+    local output
+    output=$(eval "$1" 2>&1)
+    echo "$output"
+}
+
+# Function to restart server (robust, used by both CLI and menu)
+restart_server() {
+    if [ -t 1 ] && ! show_confirm "Confirm Restart" "Are you sure you want to restart the server?" 8 78; then
+        return 1
+    fi
+    if ! require_sudo "Restarting the server requires sudo privileges."; then
+        show_message "Error" "Sudo access denied or cancelled." 8 78
+        return 1
+    fi
+
+    # Show message about returning to menu if whiptail is available
+    if [ -t 1 ] && command -v whiptail >/dev/null 2>&1; then
+        whiptail --title "Restarting Server" --msgbox "The server will now restart.\nYou will be returned to the main menu once the restart is complete." 8 78
+    fi
+
+    # Execute restart commands with loading message if whiptail is available
+    if command -v whiptail >/dev/null 2>&1; then
+        (
+            stop_server >/dev/null 2>&1
+            sleep 5
+            start_server >/dev/null 2>&1
+        ) | whiptail --title "Restarting Server" --infobox "Please wait while the server restarts..." 8 78
+    else
         stop_server
-        ;;
-    status)
-        show_status
-        ;;
-    restart)
-        stop_server && sleep 5 && start_server
-        ;;
-    logs)
-        docker logs -f $CONTAINER_NAME
-        ;;
-    lastlog)
-        docker logs --tail 100 $CONTAINER_NAME
-        ;;
-    backup)
-        create_backup
-        ;;
-    restore)
-        restore_server
-        ;;
-    players)
-        list_players
-        ;;
-    access)
-        access_server
-        ;;
-    cleanup)
-        cleanup_cache
-        ;;
-    setup)
-        setup_server_config
-        ;;
-    data)
-        check_data_persistence
-        ;;
-    gdrive-sync-setup)
-        backup_storage_setup
-        ;;
-    gdrive-sync)
+        sleep 5
+        start_server
+    fi
+}
+
+# Function to show server logs (robust, used by both CLI and menu)
+show_logs() {
+    if ! is_running; then
+        if command -v whiptail >/dev/null 2>&1; then
+            whiptail --title "Error" --msgbox "Server is not running" 8 78
+        else
+            echo "Error: Server is not running"
+        fi
+        return 1
+    fi
+    if command -v whiptail >/dev/null 2>&1; then
+        clear
+        echo "Entering live log view mode (Press Ctrl+C to exit)..."
+        echo "Filtering out shader warnings and debug messages..."
+        sleep 2
+        docker logs -f $CONTAINER_NAME 2>&1 | grep -v "WARNING: Shader\|ERROR: Shader\|Fallback handler\|The shader\|The image effect\|UnloadTime:\|Total:\|Unloading\|Couldn't create a Convex Mesh\|The referenced script"
+    else
+        docker logs -f $CONTAINER_NAME 2>&1 | grep -v "WARNING: Shader\|ERROR: Shader\|Fallback handler\|The shader\|The image effect\|UnloadTime:\|Total:\|Unloading\|Couldn't create a Convex Mesh\|The referenced script"
+    fi
+}
+
+# Function to show last 100 lines of logs (robust, used by both CLI and menu)
+show_lastlog() {
+    if ! is_running; then
+        if command -v whiptail >/dev/null 2>&1; then
+            whiptail --title "Error" --msgbox "Server is not running" 8 78
+        else
+            echo "Error: Server is not running"
+        fi
+        return 1
+    fi
+    output=$(docker logs --tail 500 $CONTAINER_NAME 2>&1 | grep -v "WARNING: Shader\|ERROR: Shader\|Fallback handler\|The shader\|The image effect\|UnloadTime:\|Total:\|Unloading\|Couldn't create a Convex Mesh\|The referenced script" | tail -n 100)
+    if command -v whiptail >/dev/null 2>&1; then
+        whiptail --title "Last 100 Log Lines (Filtered)" --scrolltext --msgbox "$output" 24 78
+    else
+        echo "$output"
+    fi
+}
+
+# Function to show interactive menu
+show_menu() {
+    while true; do
+        CHOICE=$(whiptail --title "Valheim Server Control" --menu "\nChoose an operation:" 20 78 12 \
+            "1"  "Start Server............🟢" \
+            "2"  "Stop Server.............🔴" \
+            "3"  "Show Server Status......🟡" \
+            "4"  "Restart Server..........♻️ " \
+            "5"  "List Players............👥" \
+            "6"  "View Server Logs........📜" \
+            "7"  "Backup Management.......💾" \
+            "8"  "Server Settings.........⚙️ " \
+            "9"  "Server Access Info......🌐" \
+            "10" "Clear All Logs..........🧹" \
+            "11" "Exit....................❌" \
+            3>&1 1>&2 2>&3)
+
+        if [ $? -ne 0 ]; then
+            exit 0
+        fi
+
+        case $CHOICE in
+            "1")
+                start_server
+                ;;
+            "2")
+                stop_server
+                ;;
+            "3")
+                show_status
+                ;;
+            "4")
+                restart_server
+                ;;
+            "5")
+                list_players
+                ;;
+            "6")
+                LOGS_CHOICE=$(whiptail --title "Server Logs" --menu "Choose log view:" 15 60 4 \
+                    "1" "View Last 100 Lines (Filtered)" \
+                    "2" "View Live Logs (Filtered)" \
+                    "3" "View All Logs (Unfiltered)" \
+                    3>&1 1>&2 2>&3)
+                case $LOGS_CHOICE in
+                    "1")
+                        show_lastlog
+                        ;;
+                    "2")
+                        show_logs
+                        ;;
+                    "3")
+                        if command -v whiptail >/dev/null 2>&1; then
+                            clear
+                            echo "Entering live log view mode (Press Ctrl+C to exit)..."
+                            echo "Showing all logs including shader warnings..."
+                            sleep 2
+                            docker logs -f $CONTAINER_NAME
+                        else
+                            docker logs -f $CONTAINER_NAME
+                        fi
+                        ;;
+                esac
+                ;;
+            "7")
+                while true; do
+                    BACKUP_CHOICE=$(whiptail --title "Backup Management" --menu "Choose operation:" 20 78 7 \
+                        "1" "Create New Backup" \
+                        "2" "Restore from Backup" \
+                        "3" "Show Backup Schedule" \
+                        "4" "Configure Google Drive Sync" \
+                        "5" "Re-enable Backup Scheduler" \
+                        "6" "Manual Google Drive Sync" \
+                        "7" "Return to Main Menu" \
+                        3>&1 1>&2 2>&3)
+                    
+                    [ $? -ne 0 ] && break
+                    
+                    case $BACKUP_CHOICE in
+                        "1")
+                            create_backup
+                            ;;
+                        "2")
+                            restore_server
+                            ;;
+                        "3")
+                            backup_schedule
+                            ;;
+                        "4")
+                            backup_storage_setup
+                            ;;
+                        "5")
+                            backup_reenable
+                            ;;
+                        "6")
+                            manually_sync_gdrive
+                            ;;
+                        "7")
+                            break
+                            ;;
+                    esac
+                done
+                ;;
+            "8")
+                run_full_server_setup
+                ;;
+            "9")
+                show_access_info
+                ;;
+            "10")
+                clear_all_logs
+                ;;
+            "11")
+                if show_confirm "Confirm Exit" "Are you sure you want to exit?" 8 78; then
+                    exit 0
+                fi
+                ;;
+        esac
+    done
+}
+
+# Unified full server setup function for both initial setup and menu
+run_full_server_setup() {
+    if command -v whiptail >/dev/null 2>&1; then
+        if whiptail --title "Server Setup" --yesno "Would you like to run the server configuration process now?" 10 78; then
+            setup_server_config
+            # Only set INITIAL_SETUP_ASKED=1 after successful setup
+            grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
+            mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+            echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
+            return 0
+        else
+            # If user declines setup, still mark as asked but not completed
+            grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
+            mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+            echo "INITIAL_SETUP_ASKED=0" >> .valheim.env
+            return 1
+        fi
+    else
+        echo "Would you like to run the server configuration process now? (y/n): "
+        read yn
+        if [[ "$yn" =~ ^[Yy]$ ]]; then
+            setup_server_config
+            grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
+            mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+            echo "INITIAL_SETUP_ASKED=1" >> .valheim.env
+            return 0
+        else
+            grep -v '^INITIAL_SETUP_ASKED=' .valheim.env 2>/dev/null > .valheim.env.tmp || true
+            mv .valheim.env.tmp .valheim.env 2>/dev/null || true
+            echo "INITIAL_SETUP_ASKED=0" >> .valheim.env
+            return 1
+        fi
+    fi
+}
+
+# Validate configuration
+validate_config() {
+    local error=0
+    
+    if [ -z "$SERVER_NAME" ]; then
+        echo "Error: SERVER_NAME cannot be empty"
+        error=1
+    fi
+    
+    if [ -z "$WORLD_NAME" ]; then
+        echo "Error: WORLD_NAME cannot be empty"
+        error=1
+    fi
+    
+    if [ ${#SERVER_PASS} -lt 5 ]; then
+        echo "Error: SERVER_PASS must be at least 5 characters long"
+        error=1
+    fi
+    
+    if [ "$SERVER_PUBLIC" != "0" ] && [ "$SERVER_PUBLIC" != "1" ]; then
+        echo "Error: SERVER_PUBLIC must be 0 or 1"
+        error=1
+    fi
+
+    if [ "${SERVER_CROSSPLAY:-0}" != "0" ] && [ "${SERVER_CROSSPLAY:-0}" != "1" ]; then
+        echo "Error: SERVER_CROSSPLAY must be 0 or 1"
+        error=1
+    fi
+
+    if [ $error -eq 1 ]; then
+        exit 1
+    fi
+}
+
+# Robust Google Drive sync (backgrounded, user-friendly)
+gdrive_sync() {
+    if [ -z "$RCLONE_REMOTE" ] || [ -z "$RCLONE_PATH" ]; then
+        show_message "Error" "Google Drive sync is not configured. Please run Google Drive setup first." 10 78
+        return 1
+    fi
+    if ! command -v rclone &>/dev/null; then
+        show_message "Error" "rclone is not installed. Please install rclone to use Google Drive sync." 10 78
+        return 1
+    fi
+    # Use an argument array, never a quoted command string -- string-building +
+    # eval/bare-expansion inconsistency previously caused the literal quote
+    # characters to be passed to rclone as part of the path/remote, pointing it
+    # at a folder that doesn't exist ('./valheim-backups' with quotes included)
+    # and silently failing the whole sync.
+    local sync_args=(sync --progress --transfers=4 --checkers=8 --drive-chunk-size=64M "$BACKUP_DIR" "$RCLONE_REMOTE:$RCLONE_PATH")
+    # Only use the whiptail gauge when a real controlling terminal is available.
+    # whiptail draws to /dev/tty directly; if that's not usable (no controlling
+    # terminal, some terminal wrappers, etc.) it exits immediately, which SIGPIPEs
+    # the sync command feeding its gauge before any data transfers -- silently.
+    if command -v whiptail >/dev/null 2>&1 && [ -n "$TERM" ] && [ -t 1 ] && ( : < /dev/tty ) 2>/dev/null; then
+        (
+            rclone "${sync_args[@]}" 2>&1 | stdbuf -oL grep -Eo 'Transferred:.*|Checks:.*|Elapsed time:.*|Errors:.*' | while read -r line; do
+                echo "XXX"
+                echo "$line"
+                echo "XXX"
+                sleep 1
+            done
+            echo "100"; echo "XXX"; echo "Sync complete!"; echo "XXX"
+        ) | whiptail --title "Google Drive Sync" --gauge "Syncing backups to Google Drive..." 8 78 0
+        local status=${PIPESTATUS[0]}
+        if [ $status -eq 0 ]; then
+            show_message "Success" "Google Drive sync completed successfully!" 10 78
+        else
+            show_message "Error" "Google Drive sync failed. Check your connection and rclone config." 10 78
+        fi
+    else
+        echo "Syncing backups to Google Drive..."
+        rclone "${sync_args[@]}"
+        local status=$?
+        if [ $status -eq 0 ]; then
+            echo "Google Drive sync completed successfully!"
+        else
+            echo "Google Drive sync failed. Check your connection and rclone config."
+        fi
+    fi
+    return $status
+}
+
+manually_sync_gdrive() {
+    # Run gdrive_sync in the background and track PID if in menu/interactive
+    if [ -t 1 ] && command -v whiptail >/dev/null 2>&1; then
+        gdrive_sync &
+        TEMP_PIDS+=("$!")
+        show_message "Info" "Google Drive sync started in the background. You will be notified when it completes." 10 78
+    else
         gdrive_sync
-        ;;
-    backup-schedule)
-        backup_schedule
-        ;;
-    backup-reenable)
-        backup_reenable
-        ;;
-    "?")
-        show_usage
-        ;;
-    *)
-        show_usage
-        ;;
-esac 
+    fi
+}
+
+run_server_setup() {
+    run_full_server_setup
+}
+
+# Call validation before any operation
+validate_config
+
+# Main script
+if [ $# -eq 0 ]; then
+    # No arguments provided, show interactive menu
+    show_menu
+else
+    # Arguments provided, handle traditional command-line usage
+    case "$1" in
+        start)
+            start_server
+            ;;
+        stop)
+            stop_server
+            ;;
+        status)
+            show_status
+            ;;
+        restart)
+            restart_server
+            ;;
+        logs)
+            show_logs
+            ;;
+        lastlog)
+            show_lastlog
+            ;;
+        backup)
+            create_backup
+            ;;
+        restore)
+            restore_server
+            ;;
+        players)
+            list_players
+            ;;
+        access)
+            access_server
+            ;;
+        cleanup)
+            cleanup_cache
+            ;;
+        setup)
+            run_full_server_setup
+            ;;
+        data)
+            check_data_persistence
+            ;;
+        gdrive-sync-setup)
+            backup_storage_setup
+            ;;
+        gdrive-sync)
+            gdrive_sync
+            ;;
+        backup-schedule)
+            backup_schedule
+            ;;
+        backup-reenable)
+            backup_reenable
+            ;;
+        "?")
+            show_usage
+            ;;
+        *)
+            show_usage
+            ;;
+    esac
+fi

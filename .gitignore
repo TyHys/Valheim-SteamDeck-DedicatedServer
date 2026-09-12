@@ -34,3 +34,8 @@ Thumbs.db
 
 #Valheim Data
 valheim-*
+
+shell.log
+
+.references/*
+.references
