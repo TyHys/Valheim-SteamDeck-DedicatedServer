@@ -580,6 +580,11 @@ check_backup_scheduler() {
     if is_running; then
         local interval_sec=$(( ${BACKUP_INTERVAL_HOURS:-1} * 3600 ))
         echo "Starting hourly backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
+        # Fully detach from the terminal: as long as this loop shares a tty with an
+        # interactive shell, gdrive_sync's "is this interactive?" check can pass even
+        # with nobody there to interact with a whiptail dialog, silently breaking the
+        # scheduled Google Drive sync every time. Redirecting stdin/stdout/stderr away
+        # from the terminal makes it unambiguously non-interactive, always.
         (
             while true; do
                 sleep $interval_sec
@@ -588,7 +593,7 @@ check_backup_scheduler() {
                     create_backup
                 fi
             done
-        ) &
+        ) < /dev/null >> /tmp/valheim_backup_scheduler.log 2>&1 &
         echo $! > /tmp/valheim_backup_pid
     else
         echo "No running server, backup scheduler not started."
@@ -1095,6 +1100,7 @@ backup_reenable() {
     if is_running; then
         local interval_sec=$(( ${BACKUP_INTERVAL_HOURS:-1} * 3600 ))
         echo "Starting backup scheduler (every ${BACKUP_INTERVAL_HOURS:-1} hour(s))..."
+        # See check_backup_scheduler for why this must be fully detached from the tty.
         (
             while true; do
                 sleep $interval_sec
@@ -1103,7 +1109,7 @@ backup_reenable() {
                     create_backup
                 fi
             done
-        ) &
+        ) < /dev/null >> /tmp/valheim_backup_scheduler.log 2>&1 &
         echo $! > /tmp/valheim_backup_pid
         echo "🟢 Backup scheduler started (PID $(cat /tmp/valheim_backup_pid))."
     else
@@ -1402,7 +1408,7 @@ gdrive_sync() {
     # whiptail draws to /dev/tty directly; if that's not usable (no controlling
     # terminal, some terminal wrappers, etc.) it exits immediately, which SIGPIPEs
     # the sync command feeding its gauge before any data transfers -- silently.
-    if command -v whiptail >/dev/null 2>&1 && [ -t 1 ] && ( : < /dev/tty ) 2>/dev/null; then
+    if command -v whiptail >/dev/null 2>&1 && [ -n "$TERM" ] && [ -t 1 ] && ( : < /dev/tty ) 2>/dev/null; then
         (
             rclone "${sync_args[@]}" 2>&1 | stdbuf -oL grep -Eo 'Transferred:.*|Checks:.*|Elapsed time:.*|Errors:.*' | while read -r line; do
                 echo "XXX"
